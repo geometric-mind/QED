@@ -56,9 +56,11 @@ def make_claude_options(claude_cfg: dict, working_dir: str) -> dict:
         api_cfg = claude_cfg.get("api_key", {})
         model = api_cfg.get("model", "claude-opus-4-6-20250609")
         key = api_cfg.get("key", "")
-        if not key:
-            raise ValueError("config.yaml: claude.api_key.key is empty. Set your Anthropic API key.")
-        env["ANTHROPIC_API_KEY"] = key
+        if key:
+            env["ANTHROPIC_API_KEY"] = key
+        # If key is empty we defer the failure: pipelines that don't actually
+        # invoke Claude (e.g. all-codex configs) should still be able to start.
+        # If Claude is later invoked, the CLI will surface its own auth error.
     elif provider == "bedrock":
         bedrock_cfg = claude_cfg.get("bedrock", {})
         model = bedrock_cfg.get("model", "us.anthropic.claude-opus-4-6-v1[1m]")
