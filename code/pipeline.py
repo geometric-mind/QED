@@ -706,6 +706,11 @@ async def main():
     if not os.path.exists(problem_copy):
         shutil.copy2(problem_file, problem_copy)
 
+    # Snapshot the config actually used by this run so the UI (and the user)
+    # can verify what was active. Overwrite on every invocation so resumes
+    # reflect the latest config.
+    shutil.copy2(args.config, os.path.join(output_dir, "config_used.yaml"))
+
     claude_opts = make_claude_options(claude_cfg, output_dir)
     tracker = TokenTracker(output_dir, claude_opts["model"])
 
@@ -728,6 +733,30 @@ async def main():
         print("  RESUMING previous run:")
         print("    - Literature survey: SKIP (already complete)")
     print()
+
+    def _print_file(title: str, path: str):
+        print("=" * 60)
+        print(f"  {title}")
+        print(f"  ({path})")
+        print("=" * 60)
+        if os.path.exists(path):
+            with open(path) as fh:
+                content = fh.read()
+            print(content if content.strip() else "(empty)")
+        else:
+            print("(file not found)")
+        print()
+
+    _print_file("CONFIGURATION", args.config)
+    _print_file("PROBLEM STATEMENT", problem_copy)
+    _print_file(
+        "HUMAN GUIDANCE (prove)",
+        os.path.join(output_dir, "human_help", "additional_prove_human_help_global.md"),
+    )
+    _print_file(
+        "VERIFY RULE",
+        os.path.join(output_dir, "human_help", "additional_verify_rule_global.md"),
+    )
 
     # -------------------------------------------------------
     # Stage 0: Literature Survey

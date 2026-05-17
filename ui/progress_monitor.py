@@ -277,6 +277,26 @@ def _badge(done: bool, label: str) -> str:
     return f":green[{label}: Yes]" if done else f":orange[{label}: No]"
 
 
+def _render_run_config(output_dir: str) -> None:
+    """Show the config snapshot that was active when this run started.
+
+    The pipeline copies the YAML it was invoked with to
+    ``<output>/config_used.yaml`` so the user can verify what was actually used
+    (UI form state can be edited mid-run; this file is the source of truth).
+    """
+    path = os.path.join(output_dir, "config_used.yaml")
+    content = read_file(path)
+    if not content.strip():
+        return
+    rel = _file_link(path, output_dir)
+    with st.expander(f"Configuration used  `{rel}`", expanded=False):
+        st.caption(
+            "This is the config snapshot the pipeline read at startup. "
+            "Edits made in the sidebar after the run started are NOT reflected here."
+        )
+        st.code(content, language="yaml")
+
+
 # ---------------------------------------------------------------------------
 # Stage indicator + metrics
 # ---------------------------------------------------------------------------
@@ -558,6 +578,7 @@ def render_progress(output_dir: str, run_active: bool = False) -> dict:
     if not smoke["ok"]:
         return scan
 
+    _render_run_config(output_dir)
     _render_stage_indicator(scan)
     _render_metrics(scan)
     _render_status_and_history(output_dir)
