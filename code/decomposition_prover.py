@@ -13,7 +13,7 @@ Pipeline flow:
          ↑                                                    ↓
          └──────────────────── Regulator ←────────────────────┘
 
-This is an optional alternative to the "simple" prover mode in pipeline.py.
+This is the Stage 1 prover orchestrated by pipeline.py.
 """
 
 import asyncio
@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from model_runner import run_model, run_claude_agent, ModelRunnerError
+from model_runner import run_model, run_model_for_agent, run_claude_agent, ModelRunnerError
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +38,12 @@ DEFAULT_CONFIG = {
 }
 
 DEFAULT_MODELS = {
-    "decomposer": "claude",
-    "single_prover": "claude",
-    "regulator": "claude",
-    "structural_verifier": "claude",
-    "detailed_verifier": "claude",
-    "verdict": "claude",
+    "decomposer": {"provider": "codex", "model": "gpt-5.5-pro"},
+    "single_prover": {"provider": "codex", "model": "gpt-5.5"},
+    "regulator": {"provider": "codex", "model": "gpt-5.5"},
+    "structural_verifier": {"provider": "codex", "model": "gpt-5.5"},
+    "detailed_verifier": {"provider": "codex", "model": "gpt-5.5"},
+    "verdict": {"provider": "codex", "model": "gpt-5.5"},
 }
 
 
@@ -52,14 +52,16 @@ DEFAULT_MODELS = {
 # ---------------------------------------------------------------------------
 
 def load_prompt(prompts_dir: str, name: str, **kwargs) -> str:
-    """Load a prompt template and fill placeholders."""
+    """Load a prompt template and fill placeholders via ``str.format``.
+
+    Uses the same renderer as ``pipeline.load_prompt`` so that ``{{...}}``
+    escapes in the templates (used for literal braces inside LaTeX/math
+    examples) are correctly unescaped to ``{...}`` in the rendered prompt.
+    """
     path = os.path.join(prompts_dir, name)
     with open(path) as f:
         template = f.read()
-    # Use safe formatting that doesn't fail on missing keys
-    for key, value in kwargs.items():
-        template = template.replace("{" + key + "}", str(value))
-    return template
+    return template.format(**kwargs)
 
 
 def read_file(path: str) -> str:
@@ -323,6 +325,37 @@ class DecompositionState:
     def get_proof_dir(self) -> str:
         """Get directory for current proof attempt."""
         return os.path.join(self.get_revision_dir(), f"proof_{self.proof}")
+
+    def get_plan_history_file(self) -> str:
+        """Path to the cross-attempt plan history (regulator is the sole writer)."""
+        return os.path.join(self.decomp_dir, "plan_history.md")
+
+    def ensure_plan_history(self) -> None:
+        """Create plan_history.md with a brief preamble if it does not exist yet.
+
+        The file is appended to by the regulator on REVISE_PLAN / REWRITE
+        decisions; the decomposer reads it before proposing a new plan.
+        """
+        path = self.get_plan_history_file()
+        if os.path.exists(path):
+            return
+        os.makedirs(self.decomp_dir, exist_ok=True)
+        preamble = (
+            "# Plan History\n\n"
+            "Curated record of abandoned / revised decomposition plans. The "
+            "**regulator** is the only agent permitted to append to this file, "
+            "and it does so when its decision is REVISE_PLAN or REWRITE. The "
+            "**decomposer** must read this file before producing a new plan.\n\n"
+            "Format: each entry is a level-2 section identifying the attempt / "
+            "revision, the strategy in one sentence, the key step statements "
+            "verbatim, the regulator's diagnosis of why the plan failed, what "
+            "NOT to try again, and what (if anything) might still be reused.\n\n"
+            "If a decomposer truly needs the full prior YAML, it can read it "
+            "directly at `decomposition/attempt_*/revision_*/decomposition.yaml`.\n\n"
+            "---\n"
+        )
+        with open(path, "w") as f:
+            f.write(preamble)
 
     def save_decomposition(self, decomposition: dict) -> None:
         """Save decomposition to the current revision directory.
@@ -653,45 +686,68 @@ def detect_decomposition_resume(output_dir: str) -> dict:
 # Helper to get model for an agent
 # ---------------------------------------------------------------------------
 
-def get_agent_model(config: dict, agent_name: str) -> str:
-    """Get the model provider for a specific agent from config."""
+def get_agent_role_cfg(config: dict, agent_name: str) -> dict:
+    """Return the per-agent role config dict for *agent_name*.
+
+    Shape: ``{provider: 'codex'|'claude'|'gemini', model?: '...', ...knobs...}``.
+    The chosen provider's global section is overlaid with these overrides at
+    call time (see :func:`model_runner.resolve_agent_provider_config`).
+    """
     decomp_config = config.get("decomposition", {})
     models = decomp_config.get("models", DEFAULT_MODELS)
-    return models.get(agent_name, DEFAULT_MODELS.get(agent_name, "claude"))
+    role_cfg = models.get(agent_name, DEFAULT_MODELS.get(agent_name, {"provider": "claude"}))
+    if not isinstance(role_cfg, dict) or "provider" not in role_cfg:
+        raise ValueError(
+            f"decomposition.models.{agent_name} must be a dict with a 'provider' key "
+            f"(e.g. {{provider: 'codex', model: 'gpt-5.5'}}). Got: {role_cfg!r}"
+        )
+    return role_cfg
 
 
-def get_claude_opts_for_model(config: dict, model_provider: str) -> dict:
-    """Get claude_opts dict for the specified model provider."""
-    if model_provider == "claude":
-        claude_cfg = config.get("claude", {})
-        provider = claude_cfg.get("provider", "subscription")
-        if provider == "subscription":
-            return {
-                "cli_path": claude_cfg.get("cli_path", "claude"),
-                "model": claude_cfg.get("subscription", {}).get("model", "opus"),
-                "env": {},
-            }
-        elif provider == "bedrock":
-            bedrock = claude_cfg.get("bedrock", {})
-            return {
-                "cli_path": claude_cfg.get("cli_path", "claude"),
-                "model": bedrock.get("model", "us.anthropic.claude-sonnet-4-20250514"),
-                "env": {
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    "AWS_PROFILE": bedrock.get("aws_profile", "default"),
-                },
-            }
-        elif provider == "api_key":
-            api_cfg = claude_cfg.get("api_key", {})
-            return {
-                "cli_path": claude_cfg.get("cli_path", "claude"),
-                "model": api_cfg.get("model", "claude-sonnet-4-20250514"),
-                "env": {
-                    "ANTHROPIC_API_KEY": api_cfg.get("key", ""),
-                },
-            }
-    # For codex/gemini, return empty dict - run_model will use config directly
-    return {}
+def get_agent_provider(role_cfg: dict) -> str:
+    """Convenience: extract the provider string from a role config dict."""
+    return role_cfg["provider"]
+
+
+def get_claude_opts_for_role(config: dict, role_cfg: dict) -> dict:
+    """Build claude_opts for a per-agent role config when the provider is Claude.
+
+    Returns the standard claude_opts dict ({cli_path, model, env}). The
+    agent-level ``model`` override (if any) takes precedence over the global
+    ``claude.{subscription|api_key|bedrock}.model`` value.
+
+    For non-Claude providers, returns an empty dict — the codex/gemini runners
+    read their config directly from the (already-merged) provider section.
+    """
+    if role_cfg.get("provider") != "claude":
+        return {}
+    claude_cfg = config.get("claude", {})
+    auth_mode = claude_cfg.get("provider", "subscription")
+    model_override = role_cfg.get("model")
+    if auth_mode == "subscription":
+        model = model_override or claude_cfg.get("subscription", {}).get("model", "opus")
+        env = {}
+    elif auth_mode == "bedrock":
+        bedrock = claude_cfg.get("bedrock", {})
+        model = model_override or bedrock.get("model", "us.anthropic.claude-opus-4-6-v1[1m]")
+        env = {
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_PROFILE": bedrock.get("aws_profile", "default"),
+        }
+    elif auth_mode == "api_key":
+        api_cfg = claude_cfg.get("api_key", {})
+        model = model_override or api_cfg.get("model", "claude-opus-4-6")
+        env = {"ANTHROPIC_API_KEY": api_cfg.get("key", "")}
+    else:
+        raise ValueError(
+            f"config.yaml: unknown claude.provider {auth_mode!r}. "
+            f"Use 'subscription', 'bedrock', or 'api_key'."
+        )
+    return {
+        "cli_path": claude_cfg.get("cli_path", "claude"),
+        "model": model,
+        "env": env,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +758,6 @@ async def run_decomposer(
     state: DecompositionState,
     problem_file: str,
     related_work_file: str,
-    difficulty_file: str,
     prompts_dir: str,
     config: dict,
     claude_opts: dict,
@@ -721,47 +776,21 @@ async def run_decomposer(
         regulator_guidance: Regulator's suggestions for the decomposer (for REVISE/REWRITE).
     """
 
-    model_provider = get_agent_model(config, "decomposer")
+    role_cfg = get_agent_role_cfg(config, "decomposer")
+    model_provider = role_cfg["provider"]
 
-    # Build revision context based on mode
-    revision_context = ""
+    # Resolve previous-revision paths for REVISE mode. In CREATE / REWRITE
+    # these are empty — the decomposer prompt's Input Files section renders
+    # those slots as empty strings.
+    prev_proof_file = ""
     if mode == "REVISE":
-        # Get the previous revision's decomposition and last proof
         prev_rev_num = state.revision - 1
         prev_rev_dir = os.path.join(state.get_attempt_dir(), f"revision_{prev_rev_num}")
-        prev_decomp_file = os.path.join(prev_rev_dir, "decomposition.yaml")
-        # Find the last proof in the previous revision
         last_proof = _find_max_numbered_dir(prev_rev_dir, "proof_")
-        prev_proof_file = os.path.join(prev_rev_dir, f"proof_{last_proof}", "proof.md") if last_proof > 0 else ""
-
-        revision_context = f"""
-### Current Decomposition (to revise)
-```
-{prev_decomp_file}
-```
-
-### Verification Feedback
-{verification_feedback}
-
-### Regulator Guidance
-{regulator_guidance}
-
-### Previous Proof Attempt
-```
-{prev_proof_file}
-```
-"""
-    elif mode == "REWRITE":
-        revision_context = f"""
-### Failure History
-{state.get_failure_history()}
-
-### Regulator Guidance
-{regulator_guidance}
-
-### Previous Decomposition Attempts
-See {state.decomp_dir}/attempt_*/revision_*/decomposition.yaml
-"""
+        prev_proof_file = (
+            os.path.join(prev_rev_dir, f"proof_{last_proof}", "proof.md")
+            if last_proof > 0 else ""
+        )
 
     # Resolve human help file from output_dir (run.sh copies the global files
     # there, and the UI edits them in-place).
@@ -782,19 +811,17 @@ See {state.decomp_dir}/attempt_*/revision_*/decomposition.yaml
         mode=mode,
         problem_file=problem_file,
         related_work_file=related_work_file,
-        difficulty_file=difficulty_file,
-        revision_context=revision_context,
         problem_id=os.path.basename(problem_file),
         attempt_number=state.attempt,
         revision_number=state.revision,
         timestamp=datetime.now().isoformat(),
         output_file=decomposition_output_file,
-        current_decomposition_file=prev_decomp_file if mode == "REVISE" else decomposition_output_file,
-        verification_feedback=verification_feedback,
-        regulator_guidance=regulator_guidance,
+        current_decomposition_file=prev_decomp_file if mode == "REVISE" else "",
+        verification_feedback=verification_feedback if mode == "REVISE" else "",
+        regulator_guidance=regulator_guidance if mode in ("REVISE", "REWRITE") else "",
         previous_proof_file=prev_proof_file if mode == "REVISE" else "",
-        failure_history_file=os.path.join(state.decomp_dir, "failure_history.md"),
         human_help_file=human_help_file,
+        plan_history_file=state.get_plan_history_file(),
     )
 
     if decomp_logger:
@@ -811,12 +838,12 @@ See {state.decomp_dir}/attempt_*/revision_*/decomposition.yaml
         )
 
     # Run the model
-    response = await run_model(
-        provider=model_provider,
+    response = await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name=f"decomposer_{mode.lower()}",
     )
@@ -862,7 +889,8 @@ async def run_single_prover(
 ) -> str:
     """Run the single prover agent to write a complete proof following the decomposition plan."""
 
-    model_provider = get_agent_model(config, "single_prover")
+    role_cfg = get_agent_role_cfg(config, "single_prover")
+    model_provider = role_cfg["provider"]
 
     # Resolve human help file from output_dir (run.sh copies the global files
     # there, and the UI edits them in-place).
@@ -919,12 +947,12 @@ async def run_single_prover(
             recent_activity=f"Writing proof (attempt {state.attempt}, revision {state.revision}, proof {state.proof})"
         )
 
-    response = await run_model(
-        provider=model_provider,
+    response = await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name=f"single_prover_a{state.attempt}_r{state.revision}_p{state.proof}",
     )
@@ -960,18 +988,25 @@ async def run_regulator(
     decomp_logger: DecompositionLogger = None,
     tracker=None,
     mode: str = "DECIDE",
+    verification_phase: str = "detailed",
 ) -> str:
     """Run the regulator agent to decide next action after verification failure.
 
     Args:
-        mode: "DECIDE" for normal decision, "FINAL" for failure analysis when all limits exhausted
+        mode: "DECIDE" for normal decision, "FINAL" for failure analysis when all limits exhausted.
+        verification_phase: Which verifier produced the report this call is
+            reacting to — "structural" (Phases 1–5; detailed verification did
+            not run), "detailed" (Phase 6; structural passed but detailed
+            failed), or "both" / "final" (FINAL mode and similar). This is
+            surfaced to the regulator prompt as a hint, not a constraint.
 
     Returns:
         In DECIDE mode: one of REVISE_PROOF, REVISE_PLAN, REWRITE
         In FINAL mode: "FAILED" (failure analysis is written to file)
     """
 
-    model_provider = get_agent_model(config, "regulator")
+    role_cfg = get_agent_role_cfg(config, "regulator")
+    model_provider = role_cfg["provider"]
     decomp_config = config.get("decomposition", DEFAULT_CONFIG)
 
     # Build state file content
@@ -1005,6 +1040,8 @@ max_decompositions: {decomp_config.get('max_decompositions', 3)}
         max_revisions=decomp_config.get('max_revisions', 2),
         max_decompositions=decomp_config.get('max_decompositions', 3),
         output_file=output_file,
+        plan_history_file=state.get_plan_history_file(),
+        verification_phase=verification_phase,
     )
 
     if decomp_logger:
@@ -1029,12 +1066,12 @@ max_decompositions: {decomp_config.get('max_decompositions', 3)}
                 recent_activity=f"Regulator evaluating after proof {state.proof} failed verification"
             )
 
-    response = await run_model(
-        provider=model_provider,
+    response = await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name=f"regulator_{mode.lower()}_a{state.attempt}_r{state.revision}_p{state.proof}",
     )
@@ -1079,7 +1116,8 @@ async def run_structural_verification(
     Returns the path to the verification report file.
     The verdict is determined separately by run_verdict().
     """
-    model_provider = get_agent_model(config, "structural_verifier")
+    role_cfg = get_agent_role_cfg(config, "structural_verifier")
+    model_provider = role_cfg["provider"]
 
     # Use proof directory for verification outputs
     proof_dir = state.get_proof_dir()
@@ -1118,12 +1156,12 @@ async def run_structural_verification(
             recent_activity="Running structural verification on aggregated proof"
         )
 
-    await run_model(
-        provider=model_provider,
+    await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name="proof_verify_structural",
     )
@@ -1150,7 +1188,8 @@ async def run_detailed_verification(
     Returns the path to the verification report file.
     The verdict is determined separately by run_verdict().
     """
-    model_provider = get_agent_model(config, "detailed_verifier")
+    role_cfg = get_agent_role_cfg(config, "detailed_verifier")
+    model_provider = role_cfg["provider"]
 
     # Use proof directory for verification outputs
     proof_dir = state.get_proof_dir()
@@ -1183,12 +1222,12 @@ async def run_detailed_verification(
             recent_activity="Running detailed verification on aggregated proof"
         )
 
-    await run_model(
-        provider=model_provider,
+    await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name="proof_verify_detailed",
     )
@@ -1219,7 +1258,8 @@ async def run_verdict(
 
     Returns "DONE" if verification passes, "CONTINUE" otherwise.
     """
-    model_provider = get_agent_model(config, "verdict")
+    role_cfg = get_agent_role_cfg(config, "verdict")
+    model_provider = role_cfg["provider"]
 
     prompt = load_prompt(
         prompts_dir,
@@ -1251,12 +1291,12 @@ async def run_verdict(
                 recent_activity="Running final verdict check"
             )
 
-    response = await run_model(
-        provider=model_provider,
+    response = await run_model_for_agent(
+        agent_role_cfg=role_cfg,
         prompt=prompt,
         working_dir=state.output_dir,
         config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        claude_opts=get_claude_opts_for_role(config, role_cfg) if model_provider == "claude" else claude_opts,
         tracker=tracker,
         call_name=f"verdict_{mode.lower()}",
     )
@@ -1366,7 +1406,6 @@ async def run_proof_verification(
 async def run_decomposition_prover(
     problem_file: str,
     related_work_file: str,
-    difficulty_file: str,
     output_dir: str,
     config: dict,
     prompts_dir: str,
@@ -1441,6 +1480,7 @@ async def run_decomposition_prover(
     os.makedirs(state.get_attempt_dir(), exist_ok=True)
     os.makedirs(state.get_revision_dir(), exist_ok=True)
     os.makedirs(state.get_proof_dir(), exist_ok=True)
+    state.ensure_plan_history()
 
     # --- Handle mid-pipeline resume points ---
     verification_feedback = ""
@@ -1548,12 +1588,14 @@ async def run_decomposition_prover(
         decomp_logger.log("RESUMING: Calling regulator after verification failure")
 
         # If verification_feedback is empty (initial resume at "regulator"), read from files
-        if not verification_feedback:
-            proof_dir = state.get_proof_dir()
-            structural_report = read_file(os.path.join(proof_dir, "structural_verification.md"))
-            detailed_report = read_file(os.path.join(proof_dir, "detailed_verification.md"))
-            if structural_report or detailed_report:
-                verification_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
+        proof_dir = state.get_proof_dir()
+        structural_report = read_file(os.path.join(proof_dir, "structural_verification.md"))
+        detailed_report = read_file(os.path.join(proof_dir, "detailed_verification.md"))
+        if not verification_feedback and (structural_report or detailed_report):
+            verification_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
+        # Infer which phase produced the failure: detailed if its report
+        # exists on disk, otherwise structural.
+        resume_phase = "detailed" if detailed_report else "structural"
 
         decision = await run_regulator(
             state=state,
@@ -1564,6 +1606,7 @@ async def run_decomposition_prover(
             claude_opts=claude_opts,
             decomp_logger=decomp_logger,
             tracker=tracker,
+            verification_phase=resume_phase,
         )
 
         # Get regulator guidance from the decision file
@@ -1591,7 +1634,6 @@ async def run_decomposition_prover(
                 state=state,
                 problem_file=problem_file,
                 related_work_file=related_work_file,
-                difficulty_file=difficulty_file,
                 prompts_dir=prompts_dir,
                 config=config,
                 claude_opts=claude_opts,
@@ -1609,7 +1651,6 @@ async def run_decomposition_prover(
                 state=state,
                 problem_file=problem_file,
                 related_work_file=related_work_file,
-                difficulty_file=difficulty_file,
                 prompts_dir=prompts_dir,
                 config=config,
                 claude_opts=claude_opts,
@@ -1639,7 +1680,6 @@ async def run_decomposition_prover(
                     state=state,
                     problem_file=problem_file,
                     related_work_file=related_work_file,
-                    difficulty_file=difficulty_file,
                     prompts_dir=prompts_dir,
                     config=config,
                     claude_opts=claude_opts,
@@ -1727,6 +1767,7 @@ async def run_decomposition_prover(
                     claude_opts=claude_opts,
                     decomp_logger=decomp_logger,
                     tracker=tracker,
+                    verification_phase="structural",
                 )
 
                 regulator_decision_file = os.path.join(proof_dir, "regulator_decision.md")
@@ -1808,6 +1849,7 @@ async def run_decomposition_prover(
                 claude_opts=claude_opts,
                 decomp_logger=decomp_logger,
                 tracker=tracker,
+                verification_phase="detailed",
             )
 
             regulator_decision_file = os.path.join(proof_dir, "regulator_decision.md")
@@ -1919,6 +1961,7 @@ async def run_decomposition_prover(
             decomp_logger=decomp_logger,
             tracker=tracker,
             mode="FINAL",
+            verification_phase="final",
         )
 
     decomp_logger.update_status(

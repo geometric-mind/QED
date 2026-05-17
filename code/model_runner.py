@@ -281,7 +281,7 @@ async def run_codex_agent(
         call_name: Human-readable label for this call.
     """
     cli_path = codex_config.get("cli_path", "codex")
-    model = codex_config.get("model", "gpt-5.5-pro")
+    model = codex_config.get("model", "gpt-5.5")
     reasoning = codex_config.get("reasoning_effort", "xhigh")
 
     cmd = [
@@ -358,21 +358,27 @@ async def run_codex_agent(
         # Fall back to raw stdout as response
         response = result.stdout.strip()
 
-    # Check for non-zero exit code (indicates CLI failure)
+    # The Codex CLI sometimes exits non-zero (e.g. "Reading additional input
+    # from stdin..." warning → exit code 1) even when it produced a valid
+    # agent_message. Treat the response payload as authoritative: a non-zero
+    # exit is only fatal if we could not parse any usable response.
     if result.returncode != 0:
         if logger:
-            logger.log(f"[Codex] Non-zero exit code: {result.returncode}")
-        if tracker:
-            tracker.record(call_name or "codex", input_tokens, output_tokens,
-                           elapsed, provider="codex", model=model)
-        raise ModelRunnerError(
-            provider="codex",
-            error_type="non_zero_exit",
-            message=f"Codex CLI exited with code {result.returncode}",
-            exit_code=result.returncode,
-            stderr=result.stderr,
-            stdout=result.stdout,
-        )
+            logger.log(f"[Codex] Non-zero exit code: {result.returncode} "
+                       f"(treating as warning since response was parsed)" if response.strip()
+                       else f"[Codex] Non-zero exit code: {result.returncode}")
+        if not response.strip():
+            if tracker:
+                tracker.record(call_name or "codex", input_tokens, output_tokens,
+                               elapsed, provider="codex", model=model)
+            raise ModelRunnerError(
+                provider="codex",
+                error_type="non_zero_exit",
+                message=f"Codex CLI exited with code {result.returncode}",
+                exit_code=result.returncode,
+                stderr=result.stderr,
+                stdout=result.stdout,
+            )
 
     # Check for empty response (might indicate silent failure)
     if not response.strip():
@@ -582,6 +588,71 @@ async def run_gemini_agent(
 
 
 # ---------------------------------------------------------------------------
+# Per-agent override resolution
+# ---------------------------------------------------------------------------
+
+def resolve_agent_provider_config(
+    full_config: dict,
+    agent_role_cfg: dict,
+) -> tuple[str, dict]:
+    """Resolve a per-agent role config against the global provider section.
+
+    Each agent role in config.yaml is a dict of the form::
+
+        { provider: "codex", model: "gpt-5.5", reasoning_effort: "xhigh" }
+
+    The provider name picks the global section (``codex:`` / ``gemini:`` /
+    ``claude:``). Any other keys override the corresponding fields from the
+    global section. Knobs not set on the agent fall back to global.
+
+    For ``claude``, the global section contains nested
+    ``subscription:`` / ``api_key:`` / ``bedrock:`` blocks; the per-agent
+    ``model`` override (if any) overrides whichever block ``claude.provider``
+    selects (the global ``claude.provider`` value still controls auth).
+
+    Returns ``(provider, merged_provider_cfg)`` — ``merged_provider_cfg`` is
+    a shallow copy of the global section with per-agent fields overlaid.
+    """
+    if not isinstance(agent_role_cfg, dict):
+        raise ValueError(
+            f"Agent role config must be a dict like "
+            f"{{provider: 'codex', model: 'gpt-5.5'}}, got: {agent_role_cfg!r}"
+        )
+    provider = agent_role_cfg.get("provider")
+    if not provider:
+        raise ValueError(
+            f"Agent role config is missing required 'provider' field: {agent_role_cfg!r}"
+        )
+    provider = provider.lower().strip()
+    if provider not in ("claude", "codex", "gemini"):
+        raise ValueError(
+            f"Unknown provider {provider!r}; expected 'claude', 'codex', or 'gemini'."
+        )
+
+    overrides = {k: v for k, v in agent_role_cfg.items() if k != "provider"}
+    global_section = full_config.get(provider, {})
+
+    if provider == "claude":
+        merged = {k: v for k, v in global_section.items()}
+        auth_mode = merged.get("provider", "subscription")
+        # Apply the per-agent model override into the active auth block
+        if "model" in overrides:
+            sub = dict(merged.get(auth_mode, {}))
+            sub["model"] = overrides["model"]
+            merged[auth_mode] = sub
+        # Other claude-level overrides (cli_path, permission_mode) overlay directly
+        for k, v in overrides.items():
+            if k == "model":
+                continue
+            merged[k] = v
+        return provider, merged
+
+    # codex / gemini: flat dict merge
+    merged = {**global_section, **overrides}
+    return provider, merged
+
+
+# ---------------------------------------------------------------------------
 # Unified dispatcher
 # ---------------------------------------------------------------------------
 
@@ -632,3 +703,49 @@ async def run_model(
     else:
         raise ValueError(f"Unknown model provider: {provider!r}. "
                          f"Expected 'claude', 'codex', or 'gemini'.")
+
+
+async def run_model_for_agent(
+    agent_role_cfg: dict,
+    prompt: str,
+    working_dir: str,
+    config: dict,
+    *,
+    claude_opts: dict | None = None,
+    logger=None,
+    tracker=None,
+    call_name: str = "",
+    instructions: str | None = None,
+) -> str:
+    """Dispatch using a per-agent role config (the dict-with-provider format).
+
+    Resolves ``agent_role_cfg`` against the global provider section, then
+    invokes :func:`run_model` with an effective config in which the chosen
+    provider's section has been overlaid with the per-agent overrides.
+
+    For ``claude``, also overlays the per-agent ``model`` into ``claude_opts``.
+    """
+    provider, merged_provider_cfg = resolve_agent_provider_config(
+        config, agent_role_cfg
+    )
+    effective_config = dict(config)
+    effective_config[provider] = merged_provider_cfg
+
+    if provider == "claude":
+        effective_claude_opts = dict(claude_opts or {})
+        if "model" in agent_role_cfg:
+            effective_claude_opts["model"] = agent_role_cfg["model"]
+    else:
+        effective_claude_opts = claude_opts
+
+    return await run_model(
+        provider,
+        prompt,
+        working_dir,
+        effective_config,
+        claude_opts=effective_claude_opts,
+        logger=logger,
+        tracker=tracker,
+        call_name=call_name,
+        instructions=instructions,
+    )

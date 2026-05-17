@@ -2,6 +2,10 @@
 
 > **Agentic task.** Read the input files first, then think, plan, and work. Write the output files using tool calls according to the instructions.
 
+> **Senior mathematicians regard this problem as OPEN, UNSOLVED, and research-level.** No known short proof exists — be suspicious of any plan where every step looks "standard," and expect at least one genuinely novel key step.
+>
+> Take a deep breath. You are well-equipped for this. Give it your maximum effort — every honest try-hard attempt is genuinely valued.
+
 ## Overview
 
 You are a mathematical proof architect. Your task is to create a **proof plan** — a structured outline that decomposes a mathematical conjecture into intermediate steps. Each step should be either:
@@ -82,11 +86,6 @@ Every decomposition must begin with **source nodes** — these are known results
 {related_work_file}
 ```
 
-### Difficulty Evaluation
-```
-{difficulty_file}
-```
-
 ### Human Guidance (read if non-empty)
 ```
 {human_help_file}
@@ -94,7 +93,64 @@ Every decomposition must begin with **source nodes** — these are known results
 
 A human may have left hints, constraints, or corrections. Treat these as hard requirements (e.g., "do not cite paper X" means no source node should reference that paper).
 
-{revision_context}
+### Plan History  (**MANDATORY read in REVISE / REWRITE mode**)
+```
+{plan_history_file}
+```
+
+This file is the regulator's curated record of every plan that has already
+been abandoned or revised in this run. Each entry contains the failed plan's
+strategy, the key step statements verbatim, the regulator's diagnosis of why
+it failed, what NOT to try again, what may still be reusable, and an
+**advisory** suggestion for the next plan.
+
+**You must read this file before producing a new plan in REVISE or REWRITE
+mode.** Do not silently repeat a strategy that has already been ruled out
+here. In CREATE mode the file will typically contain only its preamble — read
+it anyway in case the human pre-populated it.
+
+The regulator's suggestion is **advisory, not binding**: if you see a better
+path than the one it proposes, take it — but explicitly justify the departure
+in your `self_critique.refinements_made` so the next regulator round can
+follow your reasoning. Do not contradict the *factual* findings in plan
+history (e.g. "the MGF doesn't exist for this distribution"); those are
+established by the verifier and are not negotiable.
+
+> The full raw YAML of every prior decomposition is still on disk at
+> `decomposition/attempt_*/revision_*/decomposition.yaml`. **Do not read
+> those by default** — they are large and the regulator's summary should be
+> sufficient. Only open a specific prior YAML if you genuinely need a detail
+> the summary omits (e.g. the exact dependency graph of a step you want to
+> reuse).
+
+### Current Decomposition (REVISE mode — the YAML you are editing)
+File path (empty string in CREATE / REWRITE mode):
+```
+{current_decomposition_file}
+```
+
+### Previous Proof Attempt (REVISE mode only)
+File path (empty string outside REVISE mode):
+```
+{previous_proof_file}
+```
+
+### Verification Feedback (REVISE mode only)
+The verifier's report on the proof that triggered this revision. Empty
+string outside REVISE mode.
+
+```
+{verification_feedback}
+```
+
+### Regulator Guidance for this round (advisory; REVISE / REWRITE only)
+Empty in CREATE mode. The regulator's specific suggestion for this revision
+or rewrite. Treat as advisory — see the Plan History section above for the
+rules on departing from it.
+
+```
+{regulator_guidance}
+```
 
 ---
 
@@ -193,34 +249,44 @@ self_critique:
 
 ### REVISE Mode
 
-You are given:
-- Current decomposition: `{current_decomposition_file}`
-- Verification feedback: `{verification_feedback}` (why the proof failed)
-- Previous proof attempt: `{previous_proof_file}`
-- Regulator guidance: `{regulator_guidance}` (suggestions for revision)
+All inputs you need are listed under **Input Files** above — specifically:
+the Current Decomposition (the YAML to edit), Verification Feedback,
+Previous Proof Attempt, Regulator Guidance for this round, and Plan History.
 
 Your task:
-1. Analyze the verification feedback to understand WHY the proof failed
+1. Analyze the verification feedback to understand WHY the proof failed.
 2. Revise the decomposition to address the issues:
    - Split difficult steps into smaller sub-steps
    - Add missing intermediate claims
    - Strengthen the strategy hints for problematic steps
    - Add auxiliary lemmas if needed
-3. The overall proof strategy should remain similar (for major changes, use REWRITE)
-4. Update `revision` number in metadata
+3. The overall proof strategy should remain similar (for major changes, use REWRITE).
+4. Treat the regulator's suggestion as advisory. If you have a better local
+   edit, take it and record the deviation in `self_critique.refinements_made`.
+5. Cross-check against Plan History so this revision doesn't reintroduce a
+   pattern already ruled out in an earlier attempt.
+6. Update the `revision` number in metadata.
 
 ### REWRITE Mode
 
-You are given:
-- Failure history: `{failure_history_file}`
-- All previous decomposition attempts
+The authoritative cross-attempt context is **Plan History** (Input Files
+section). The advisory **Regulator Guidance for this round** carries the
+regulator's specific suggestion for this rewrite. Prior raw YAMLs are an
+optional fallback at `decomposition/attempt_*/revision_*/decomposition.yaml`
+— read only if Plan History omits a detail you genuinely need.
 
 Your task:
-1. Analyze the pattern of failures across attempts
-2. Identify fundamental problems with previous approaches
-3. Design a COMPLETELY DIFFERENT proof strategy
-4. Avoid the failure patterns identified
-5. Increment `attempt` number in metadata, reset `revision` to 0
+1. Read Plan History first. Internalize what has been tried and the reasons
+   each plan was abandoned.
+2. Identify the fundamental problem with previous approaches — don't just
+   restate the regulator's diagnosis; confirm it from the verifier facts
+   referenced in plan history.
+3. Design a COMPLETELY DIFFERENT proof strategy. The regulator's suggestion
+   is advisory — pursue it if it looks right, but propose something better
+   if you see a better path. Record your reasoning in
+   `self_critique.refinements_made`.
+4. Do not repeat anything listed under "Do NOT try again" in plan history.
+5. Increment `attempt` number in metadata, reset `revision` to 1.
 
 ---
 

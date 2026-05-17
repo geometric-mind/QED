@@ -1,4 +1,4 @@
-"""Shared constants and helper functions for the QED Streamlit UI."""
+"""Shared constants and helper functions for the QED decomposition-mode UI."""
 
 import json
 import os
@@ -23,6 +23,24 @@ GLOBAL_VERIFY_HH = os.path.join(HUMAN_HELP_DIR, "additional_verify_rule_global.m
 
 MODEL_PROVIDERS = ("claude", "codex", "gemini")
 
+DECOMP_DIR_NAME = "decomposition"
+
+# Six decomposition-stage agents (config.yaml: decomposition.models.*)
+AGENT_NAMES = (
+    "decomposer",
+    "single_prover",
+    "regulator",
+    "structural_verifier",
+    "detailed_verifier",
+    "verdict",
+)
+
+# Stage 0 and Stage 2 agents (config.yaml: pipeline.*)
+PIPELINE_AGENT_NAMES = ("literature_survey", "proof_summary")
+
+CODEX_REASONING_LEVELS = ("xhigh", "high", "medium", "low")
+GEMINI_THINKING_LEVELS = ("HIGH", "MEDIUM", "LOW", "NONE")
+
 
 # ---------------------------------------------------------------------------
 # YAML I/O
@@ -36,7 +54,9 @@ def load_config(path: str) -> dict:
 
 def save_config(config: dict, path: str) -> None:
     """Write *config* dict to a YAML file at *path*."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
@@ -46,16 +66,21 @@ def save_config(config: dict, path: str) -> None:
 # ---------------------------------------------------------------------------
 
 def read_file(path: str) -> str:
-    """Read a text file. Return ``""`` if missing or empty."""
+    """Read a text file. Return ``""`` if missing."""
     if not os.path.exists(path):
         return ""
-    with open(path) as f:
-        return f.read()
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 def write_file(path: str, content: str) -> None:
     """Write *content* to *path*, creating parent directories if needed."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w") as f:
         f.write(content)
 
@@ -64,91 +89,28 @@ def file_nonempty(path: str) -> bool:
     """Return True if *path* exists and has non-whitespace content."""
     if not os.path.exists(path):
         return False
-    with open(path) as f:
-        return bool(f.read().strip())
-
-
-# ---------------------------------------------------------------------------
-# Verification-file helpers (mirrors pipeline.py)
-# ---------------------------------------------------------------------------
-
-def find_verification_files(directory: str) -> list[str]:
-    """Find verification result files in *directory*.
-
-    Returns the single-file path if ``verification_result.md`` exists,
-    otherwise all ``verification_result_<provider>.md`` files.
-    """
-    single = os.path.join(directory, "verification_result.md")
-    if file_nonempty(single):
-        return [single]
-    files = []
-    if os.path.isdir(directory):
-        for name in sorted(os.listdir(directory)):
-            if name.startswith("verification_result_") and name.endswith(".md"):
-                path = os.path.join(directory, name)
-                if file_nonempty(path):
-                    files.append(path)
-    return files
-
-
-def parse_verdict_from_file(path: str) -> str:
-    """Parse the Overall Verdict from a verification_result file.
-
-    Returns ``'PASS'``, ``'FAIL'``, or ``'UNKNOWN'``.
-    """
     try:
         with open(path) as f:
-            for line in f:
-                if "overall verdict" in line.lower():
-                    upper = line.upper()
-                    if "PASS" in upper:
-                        return "PASS"
-                    if "FAIL" in upper:
-                        return "FAIL"
+            return bool(f.read().strip())
     except OSError:
-        pass
-    return "UNKNOWN"
+        return False
 
 
 # ---------------------------------------------------------------------------
-# Progress scanning helpers
+# Survey helpers
 # ---------------------------------------------------------------------------
-
-def is_parallel_round(round_dir: str) -> bool:
-    """Return True if *round_dir* contains per-model subdirectories."""
-    return any(
-        os.path.isdir(os.path.join(round_dir, m)) for m in MODEL_PROVIDERS
-    )
-
-
-def list_round_dirs(output_dir: str) -> list[int]:
-    """Return sorted list of round numbers found in ``verification/``."""
-    verify_dir = os.path.join(output_dir, "verification")
-    if not os.path.isdir(verify_dir):
-        return []
-    nums: list[int] = []
-    for name in os.listdir(verify_dir):
-        if name.startswith("round_"):
-            try:
-                nums.append(int(name.split("_", 1)[1]))
-            except ValueError:
-                continue
-    nums.sort()
-    return nums
-
 
 def is_survey_complete(output_dir: str) -> bool:
-    """True if the literature survey stage completed."""
+    """True if Stage 0 finished. Mirrors ``pipeline.literature_survey_complete``:
+    Easy → difficulty_evaluation.md + proof.md (no related_work.md required);
+    otherwise → difficulty_evaluation.md + related_work.md.
+    """
     ri = os.path.join(output_dir, "related_info")
-    return (
-        file_nonempty(os.path.join(ri, "difficulty_evaluation.md"))
-        and file_nonempty(os.path.join(ri, "related_work.md"))
-    )
-
-
-def is_pipeline_complete(output_dir: str) -> bool:
-    """True if the entire pipeline finished (summary exists)."""
-    return file_nonempty(os.path.join(output_dir, "proof_effort_summary.md"))
+    if not file_nonempty(os.path.join(ri, "difficulty_evaluation.md")):
+        return False
+    if parse_difficulty(output_dir) == "easy":
+        return file_nonempty(os.path.join(output_dir, "proof.md"))
+    return file_nonempty(os.path.join(ri, "related_work.md"))
 
 
 def parse_difficulty(output_dir: str) -> str:
@@ -156,115 +118,167 @@ def parse_difficulty(output_dir: str) -> str:
     path = os.path.join(output_dir, "related_info", "difficulty_evaluation.md")
     if not os.path.exists(path):
         return "unknown"
-    with open(path) as f:
-        for line in f:
-            if "classification" in line.lower():
-                upper = line.upper()
-                if "EASY" in upper:
-                    return "easy"
-                if "MEDIUM" in upper:
-                    return "medium"
-                if "HARD" in upper:
-                    return "hard"
+    try:
+        with open(path) as f:
+            for line in f:
+                if "classification" in line.lower():
+                    upper = line.upper()
+                    if "EASY" in upper:
+                        return "easy"
+                    if "MEDIUM" in upper:
+                        return "medium"
+                    if "HARD" in upper:
+                        return "hard"
+    except OSError:
+        pass
     return "unknown"
 
 
-def get_round_status(output_dir: str, round_num: int) -> dict:
-    """Return status dict for a single round.
+# ---------------------------------------------------------------------------
+# Decomposition path enumerators
+# ---------------------------------------------------------------------------
 
-    Mirrors the file-existence checks in ``detect_resume_state()``
-    (pipeline.py:367-562).
+def _numeric_dirs(parent: str, prefix: str) -> list[int]:
+    if not os.path.isdir(parent):
+        return []
+    nums: list[int] = []
+    for name in os.listdir(parent):
+        if not name.startswith(prefix):
+            continue
+        tail = name[len(prefix):]
+        try:
+            nums.append(int(tail))
+        except ValueError:
+            continue
+    nums.sort()
+    return nums
 
-    Returns::
 
-        {
-            "num": int,
-            "is_parallel": bool,
-            "proof_done": bool,
-            "structural_done": bool,
-            "detailed_done": bool,
-            "verdict": str,         # PASS / FAIL / UNKNOWN / ""
-        }
+def decomp_root(output_dir: str) -> str:
+    return os.path.join(output_dir, DECOMP_DIR_NAME)
+
+
+def attempt_dir(output_dir: str, n: int) -> str:
+    return os.path.join(decomp_root(output_dir), f"attempt_{n}")
+
+
+def revision_dir(output_dir: str, n: int, m: int) -> str:
+    return os.path.join(attempt_dir(output_dir, n), f"revision_{m}")
+
+
+def proof_dir(output_dir: str, n: int, m: int, k: int) -> str:
+    return os.path.join(revision_dir(output_dir, n, m), f"proof_{k}")
+
+
+def list_attempt_dirs(output_dir: str) -> list[int]:
+    """Return sorted list of attempt numbers in ``decomposition/``."""
+    return _numeric_dirs(decomp_root(output_dir), "attempt_")
+
+
+def list_revision_dirs(attempt_path: str) -> list[int]:
+    """Return sorted list of revision numbers inside an attempt directory."""
+    return _numeric_dirs(attempt_path, "revision_")
+
+
+def list_proof_dirs(revision_path: str) -> list[int]:
+    """Return sorted list of proof numbers inside a revision directory."""
+    return _numeric_dirs(revision_path, "proof_")
+
+
+# ---------------------------------------------------------------------------
+# Decomposition status / completion
+# ---------------------------------------------------------------------------
+
+_STATUS_ROW_RE = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$")
+_LAST_UPDATED_RE = re.compile(r"\*\*Last Updated:\*\*\s*(.+)")
+
+
+def parse_status_md(output_dir: str) -> dict:
+    """Parse ``decomposition/STATUS.md`` into a dict.
+
+    Looks for a markdown table with rows for State/Attempt/Revision/Proof
+    and a ``Recent Activity`` section. Returns sentinel values when fields
+    are missing.
     """
-    round_dir = os.path.join(output_dir, "verification", f"round_{round_num}")
+    path = os.path.join(decomp_root(output_dir), "STATUS.md")
     result = {
-        "num": round_num,
-        "is_parallel": False,
-        "proof_done": False,
-        "structural_done": False,
-        "detailed_done": False,
-        "verdict": "",
+        "state": "",
+        "attempt": None,
+        "revision": None,
+        "proof": None,
+        "last_updated": "",
+        "recent_activity": "",
+        "raw": "",
     }
-    if not os.path.isdir(round_dir):
+    raw = read_file(path)
+    if not raw.strip():
         return result
+    result["raw"] = raw
 
-    parallel = is_parallel_round(round_dir)
-    result["is_parallel"] = parallel
+    last_match = _LAST_UPDATED_RE.search(raw)
+    if last_match:
+        result["last_updated"] = last_match.group(1).strip()
 
-    if parallel:
-        # Check per-model status
-        models_proof = []
-        models_structural = []
-        models_detailed = []
-        for m in MODEL_PROVIDERS:
-            mdir = os.path.join(round_dir, m)
-            if not os.path.isdir(mdir):
-                continue
-            if file_nonempty(os.path.join(mdir, "proof_status.md")):
-                models_proof.append(m)
-            s_dir = os.path.join(mdir, "verification_file", "structural")
-            d_dir = os.path.join(mdir, "verification_file", "detailed")
-            if find_verification_files(d_dir) or find_verification_files(mdir):
-                models_detailed.append(m)
-            elif find_verification_files(s_dir):
-                models_structural.append(m)
+    # Walk the lines, picking out table rows
+    for line in raw.splitlines():
+        m = _STATUS_ROW_RE.match(line)
+        if not m:
+            continue
+        key = m.group(1).strip().lower()
+        value = m.group(2).strip()
+        if key == "state":
+            result["state"] = value
+        elif key in ("attempt", "revision", "proof"):
+            try:
+                result[key] = int(value)
+            except ValueError:
+                pass
 
-        result["proof_done"] = len(models_proof) > 0
-        result["structural_done"] = (
-            len(models_structural) + len(models_detailed) == len(models_proof)
-            and len(models_proof) > 0
-        )
-        all_detailed = (
-            len(models_detailed) == len(models_proof) and len(models_proof) > 0
-        )
-        # selection.md is only created when multiple providers ran;
-        # with a single provider the pipeline skips selection.
-        has_selection = file_nonempty(os.path.join(round_dir, "selection.md"))
-        result["detailed_done"] = all_detailed and (
-            has_selection or len(models_proof) == 1
-        )
-        # Verdict: parse from any available detailed verification file
-        for m in models_detailed:
-            d_dir = os.path.join(round_dir, m, "verification_file", "detailed")
-            for vf in find_verification_files(d_dir):
-                v = parse_verdict_from_file(vf)
-                if v in ("PASS", "FAIL"):
-                    result["verdict"] = v
-                    break
-            if result["verdict"]:
-                break
-    else:
-        # Single-model round
-        result["proof_done"] = file_nonempty(
-            os.path.join(round_dir, "proof_status.md")
-        )
-        s_dir = os.path.join(round_dir, "verification_file", "structural")
-        d_dir = os.path.join(round_dir, "verification_file", "detailed")
-        result["structural_done"] = bool(find_verification_files(s_dir))
-        result["detailed_done"] = bool(
-            find_verification_files(d_dir)
-            or find_verification_files(round_dir)  # legacy layout
-        )
-        # Parse verdict
-        verify_files = (
-            find_verification_files(d_dir)
-            or find_verification_files(round_dir)
-        )
-        if verify_files:
-            result["verdict"] = parse_verdict_from_file(verify_files[0])
+    # Recent Activity = paragraph after the "## Recent Activity" header
+    activity_pos = raw.lower().find("## recent activity")
+    if activity_pos != -1:
+        tail = raw[activity_pos:].split("\n", 1)
+        if len(tail) > 1:
+            result["recent_activity"] = tail[1].strip()
 
     return result
 
+
+def is_summary_complete(output_dir: str) -> bool:
+    """True if Stage 2 wrote ``proof_effort_summary.md``, OR if the pipeline
+    took the Easy short-circuit (Stage 2 is intentionally skipped for Easy
+    problems — the survey agent writes proof.md directly and the pipeline
+    returns without invoking the summary agent).
+    """
+    if file_nonempty(os.path.join(output_dir, "proof_effort_summary.md")):
+        return True
+    if parse_difficulty(output_dir) == "easy" and file_nonempty(
+        os.path.join(output_dir, "proof.md")
+    ):
+        return True
+    return False
+
+
+def is_pipeline_complete(output_dir: str) -> bool:
+    """Alias for ``is_summary_complete`` (Stage 2 / Easy short-circuit is final)."""
+    return is_summary_complete(output_dir)
+
+
+def proof_succeeded(output_dir: str) -> bool:
+    """True if a final top-level ``proof.md`` exists with content."""
+    return file_nonempty(os.path.join(output_dir, "proof.md"))
+
+
+def decomp_failed(output_dir: str) -> bool:
+    """True if the decomposition prover wrote a failure analysis."""
+    return os.path.exists(
+        os.path.join(decomp_root(output_dir), "failure_analysis.md")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Token usage
+# ---------------------------------------------------------------------------
 
 def parse_token_usage(output_dir: str) -> dict | None:
     """Read ``token_usage.json`` if present. Return dict or None."""

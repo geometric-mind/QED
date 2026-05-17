@@ -1,39 +1,109 @@
-"""File-system scanner and Streamlit renderer for pipeline progress."""
+"""File-system scanner and Streamlit renderer for decomposition-mode progress."""
 
 import os
+import re
 
 import streamlit as st
 
 from utils import (
+    decomp_root,
+    attempt_dir,
+    revision_dir,
+    proof_dir,
+    list_attempt_dirs,
+    list_revision_dirs,
+    list_proof_dirs,
+    parse_status_md,
     is_survey_complete,
-    is_pipeline_complete,
+    is_summary_complete,
+    proof_succeeded,
+    decomp_failed,
     parse_difficulty,
-    list_round_dirs,
-    get_round_status,
     parse_token_usage,
     read_file,
-    write_file,
     file_nonempty,
-    find_verification_files,
-    MODEL_PROVIDERS,
 )
 
 
 # ---------------------------------------------------------------------------
-# Scanning
+# Scan
 # ---------------------------------------------------------------------------
 
+_PROOF_FILES = {
+    "proof_md": "proof.md",
+    "prover_response": "prover_response.md",
+    "scratchpad": "scratchpad.md",
+    "structural_verification": "structural_verification.md",
+    "detailed_verification": "detailed_verification.md",
+    "regulator_decision": "regulator_decision.md",
+}
+
+
+def _scan_proof(proof_path: str, num: int) -> dict:
+    files = {key: file_nonempty(os.path.join(proof_path, name))
+             for key, name in _PROOF_FILES.items()}
+    error_files: list[str] = []
+    if os.path.isdir(proof_path):
+        for name in sorted(os.listdir(proof_path)):
+            if name.startswith("error_") and name.endswith(".md"):
+                if file_nonempty(os.path.join(proof_path, name)):
+                    error_files.append(name)
+    return {
+        "num": num,
+        "dir": proof_path,
+        **files,
+        "error_files": error_files,
+    }
+
+
+def _scan_revision(output_dir: str, n: int, m: int) -> dict:
+    r_path = revision_dir(output_dir, n, m)
+    decomp_yaml = os.path.join(r_path, "decomposition.yaml")
+    decomp_resp = os.path.join(r_path, "decomposer_response.md")
+    proofs = [
+        _scan_proof(os.path.join(r_path, f"proof_{k}"), k)
+        for k in list_proof_dirs(r_path)
+    ]
+    return {
+        "num": m,
+        "dir": r_path,
+        "decomposition_yaml": decomp_yaml if file_nonempty(decomp_yaml) else None,
+        "decomposer_response": decomp_resp if file_nonempty(decomp_resp) else None,
+        "proofs": proofs,
+    }
+
+
+def _scan_attempt(output_dir: str, n: int) -> dict:
+    a_path = attempt_dir(output_dir, n)
+    revisions = [
+        _scan_revision(output_dir, n, m) for m in list_revision_dirs(a_path)
+    ]
+    return {"num": n, "dir": a_path, "revisions": revisions}
+
+
 def scan_progress(output_dir: str) -> dict:
-    """Scan the output directory and return a progress snapshot."""
+    """Scan an output directory and return a snapshot of decomposition-mode progress."""
     result = {
         "exists": False,
         "survey_complete": False,
         "difficulty": "unknown",
-        "rounds": [],
+        "summary_complete": False,
         "pipeline_complete": False,
+        "proof_succeeded": False,
+        "decomp_failed": False,
         "current_stage": "idle",
-        "proof_content": "",
+        "decomposition_state": {
+            "state_label": "",
+            "current_attempt": None,
+            "current_revision": None,
+            "current_proof": None,
+            "last_updated": "",
+            "recent_activity": "",
+        },
+        "attempts": [],
         "token_usage": None,
+        "final_proof": "",
+        "failure_analysis": "",
     }
 
     if not os.path.isdir(output_dir):
@@ -42,26 +112,40 @@ def scan_progress(output_dir: str) -> dict:
     result["exists"] = True
     result["survey_complete"] = is_survey_complete(output_dir)
     result["difficulty"] = parse_difficulty(output_dir)
-    result["pipeline_complete"] = is_pipeline_complete(output_dir)
+    result["summary_complete"] = is_summary_complete(output_dir)
+    result["pipeline_complete"] = result["summary_complete"]
+    result["proof_succeeded"] = proof_succeeded(output_dir)
+    result["decomp_failed"] = decomp_failed(output_dir)
 
-    rounds = list_round_dirs(output_dir)
-    for r in rounds:
-        result["rounds"].append(get_round_status(output_dir, r))
+    status = parse_status_md(output_dir)
+    result["decomposition_state"] = {
+        "state_label": status["state"],
+        "current_attempt": status["attempt"],
+        "current_revision": status["revision"],
+        "current_proof": status["proof"],
+        "last_updated": status["last_updated"],
+        "recent_activity": status["recent_activity"],
+    }
 
-    result["proof_content"] = read_file(os.path.join(output_dir, "proof.md"))
+    result["attempts"] = [
+        _scan_attempt(output_dir, n) for n in list_attempt_dirs(output_dir)
+    ]
+
     result["token_usage"] = parse_token_usage(output_dir)
+    result["final_proof"] = read_file(os.path.join(output_dir, "proof.md"))
+    result["failure_analysis"] = read_file(
+        os.path.join(decomp_root(output_dir), "failure_analysis.md")
+    )
 
-    # Determine current stage
-    if result["pipeline_complete"]:
+    # Stage classification
+    if result["summary_complete"]:
         result["current_stage"] = "complete"
-    elif result["rounds"]:
-        last = result["rounds"][-1]
-        if last["verdict"] == "PASS":
-            result["current_stage"] = "summary"
-        else:
-            result["current_stage"] = "proof_loop"
-    elif result["survey_complete"]:
-        result["current_stage"] = "proof_loop"
+    elif result["decomp_failed"]:
+        result["current_stage"] = "failed"
+    elif result["proof_succeeded"]:
+        result["current_stage"] = "summary"
+    elif result["attempts"] or result["survey_complete"]:
+        result["current_stage"] = "decomp_loop"
     elif result["exists"]:
         result["current_stage"] = "survey"
     else:
@@ -71,25 +155,10 @@ def scan_progress(output_dir: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Smoke test
+# Smoke test (reused from archived progress_monitor.py)
 # ---------------------------------------------------------------------------
 
-import re
-
 def parse_smoke_test_status(output_dir: str) -> dict:
-    """Parse smoke test status from pipeline_stdout.log.
-
-    Returns::
-
-        {
-            "started": bool,     # log file exists with content
-            "finished": bool,    # SMOKE TEST RESULTS line found
-            "passed": int,
-            "failed": int,
-            "ok": bool,          # finished and failed == 0
-            "log": str,          # full smoke test output
-        }
-    """
     result = {
         "started": False,
         "finished": False,
@@ -105,8 +174,6 @@ def parse_smoke_test_status(output_dir: str) -> dict:
 
     result["started"] = True
 
-    # Extract everything up to (and including) the SMOKE TEST RESULTS block
-    # The results line looks like: SMOKE TEST RESULTS: 42 passed, 0 failed
     match = re.search(
         r"SMOKE TEST RESULTS:\s*(\d+)\s*passed,\s*(\d+)\s*failed", content
     )
@@ -115,25 +182,20 @@ def parse_smoke_test_status(output_dir: str) -> dict:
         result["passed"] = int(match.group(1))
         result["failed"] = int(match.group(2))
         result["ok"] = result["failed"] == 0
-        # Grab log up to end of the results block (next === line after results)
         end_pos = content.find("=" * 20, match.end())
         if end_pos != -1:
-            # Include up to end of that === line
             nl = content.find("\n", end_pos)
             result["log"] = content[: nl + 1 if nl != -1 else end_pos + 60]
         else:
             result["log"] = content[: match.end() + 100]
     else:
-        # Still running — show what we have so far
         result["log"] = content
 
     return result
 
 
 def render_smoke_test(output_dir: str, run_active: bool) -> dict:
-    """Render smoke test status. Returns the parsed status dict."""
     status = parse_smoke_test_status(output_dir)
-
     if not status["started"]:
         if run_active:
             st.info("Starting pipeline...")
@@ -142,7 +204,7 @@ def render_smoke_test(output_dir: str, run_active: bool) -> dict:
     if status["finished"]:
         if status["ok"]:
             st.success(
-                f"Smoke test **passed** ({status['passed']} checks passed)"
+                f"Smoke test **passed** ({status['passed']} checks)"
             )
         else:
             st.error(
@@ -161,11 +223,10 @@ def render_smoke_test(output_dir: str, run_active: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Display helpers (reused shape from archived)
 # ---------------------------------------------------------------------------
 
 def _tail_file(path: str, max_bytes: int = 20_000, max_lines: int = 80) -> str:
-    """Read the tail of a file efficiently."""
     if not os.path.exists(path):
         return ""
     try:
@@ -184,17 +245,24 @@ def _tail_file(path: str, max_bytes: int = 20_000, max_lines: int = 80) -> str:
 
 
 def _file_link(path: str, output_dir: str) -> str:
-    """Return a relative path string for display."""
     try:
         return os.path.relpath(path, output_dir)
     except ValueError:
         return path
 
 
-def _show_file(label: str, path: str, output_dir: str,
-               expanded: bool = False, as_code: bool = False) -> None:
-    """Show a file in an expander with its relative path."""
-    content = read_file(path)
+def _show_file(
+    label: str,
+    path: str,
+    output_dir: str,
+    expanded: bool = False,
+    as_code: bool = False,
+    tail: bool = False,
+) -> None:
+    if tail:
+        content = _tail_file(path)
+    else:
+        content = read_file(path)
     if not content.strip():
         return
     rel = _file_link(path, output_dir)
@@ -205,84 +273,90 @@ def _show_file(label: str, path: str, output_dir: str,
             st.markdown(content)
 
 
+def _badge(done: bool, label: str) -> str:
+    return f":green[{label}: Yes]" if done else f":orange[{label}: No]"
+
+
 # ---------------------------------------------------------------------------
-# Stage indicator
+# Stage indicator + metrics
 # ---------------------------------------------------------------------------
 
 def _render_stage_indicator(scan: dict) -> None:
-    """Render the three-stage progress indicator."""
+    """Three-column indicator: Survey | Decomp Loop | Summary."""
     stage = scan["current_stage"]
     cols = st.columns(3)
     stages = [
-        ("Survey", "survey"),
-        ("Proof Loop", "proof_loop"),
-        ("Summary", "summary"),
+        ("Survey",       "survey",      scan["survey_complete"]),
+        ("Decomp Loop",  "decomp_loop", bool(scan["attempts"]) or scan["proof_succeeded"]),
+        ("Summary",      "summary",     scan["summary_complete"]),
     ]
-    for col, (label, stage_key) in zip(cols, stages):
+    for col, (label, key, done) in zip(cols, stages):
         with col:
             if stage == "complete":
-                st.success(f"**{label}** -- Done")
-            elif stage_key == stage:
-                st.info(f"**{label}** -- Running...")
-            elif (
-                (stage_key == "survey" and scan["survey_complete"])
-                or (stage_key == "proof_loop" and scan["rounds"]
-                    and stage in ("summary", "complete"))
-            ):
-                st.success(f"**{label}** -- Done")
+                st.success(f"**{label}** — Done")
+            elif stage == "failed" and key == "decomp_loop":
+                st.error(f"**{label}** — Failed")
+            elif stage == key:
+                st.info(f"**{label}** — Running...")
+            elif done or (stage in ("summary", "complete") and key != "summary"):
+                st.success(f"**{label}** — Done")
             else:
-                st.markdown(f"**{label}** -- Pending")
+                st.markdown(f"**{label}** — Pending")
 
 
 def _render_metrics(scan: dict) -> None:
-    """Render the metrics row."""
     token = scan["token_usage"]
     cols = st.columns(4)
-    cols[0].metric("Rounds", len(scan["rounds"]))
+    cols[0].metric("Attempts", len(scan["attempts"]))
     cols[1].metric("Difficulty", scan["difficulty"].capitalize())
     if token:
-        cols[2].metric("Input Tokens", f"{token.get('total_input_tokens', 0):,}")
-        cols[3].metric("Output Tokens", f"{token.get('total_output_tokens', 0):,}")
+        cols[2].metric(
+            "Input Tokens",
+            f"{token.get('total_input_tokens', 0):,}",
+        )
+        cols[3].metric(
+            "Output Tokens",
+            f"{token.get('total_output_tokens', 0):,}",
+        )
     else:
         cols[2].metric("Input Tokens", "--")
         cols[3].metric("Output Tokens", "--")
 
 
 # ---------------------------------------------------------------------------
-# Pipeline status & event history
+# Status + history
 # ---------------------------------------------------------------------------
 
 def _render_status_and_history(output_dir: str) -> None:
-    """Render current status table and event timeline."""
-    # Current status — pick the latest active stage
-    status_files = [
-        os.path.join(output_dir, "summary_log", "AUTO_RUN_STATUS.md"),
-        os.path.join(output_dir, "verification", "AUTO_RUN_STATUS.md"),
+    decomp_status_path = os.path.join(decomp_root(output_dir), "STATUS.md")
+    decomp_status = read_file(decomp_status_path).strip()
+    if decomp_status:
+        rel = _file_link(decomp_status_path, output_dir)
+        with st.expander(f"Decomposition Current State  `{rel}`", expanded=True):
+            st.markdown(decomp_status)
+
+    for sf in (
         os.path.join(output_dir, "literature_survey_log", "AUTO_RUN_STATUS.md"),
-    ]
-    for sf in status_files:
+        os.path.join(output_dir, "summary_log", "AUTO_RUN_STATUS.md"),
+    ):
         content = read_file(sf).strip()
         if content:
             rel = _file_link(sf, output_dir)
-            with st.expander(f"Current Status  `{rel}`", expanded=True):
+            with st.expander(f"Stage Status  `{rel}`", expanded=False):
                 st.markdown(content)
-            break
 
-    # Event history — concatenate all stages
     history_files = [
         os.path.join(output_dir, "literature_survey_log", "AUTO_RUN_STATUS.md.history"),
-        os.path.join(output_dir, "verification", "AUTO_RUN_STATUS.md.history"),
         os.path.join(output_dir, "summary_log", "AUTO_RUN_STATUS.md.history"),
     ]
-    parts = []
+    parts: list[str] = []
     for hf in history_files:
         content = read_file(hf).strip()
         if content:
-            parts.append(content)
+            parts.append(f"# {_file_link(hf, output_dir)}\n{content}")
     if parts:
-        history = "\n".join(parts)
-        with st.expander("Event History", expanded=True):
-            st.code(history, language="text")
+        with st.expander("Event History", expanded=False):
+            st.code("\n\n".join(parts), language="text")
 
 
 # ---------------------------------------------------------------------------
@@ -290,272 +364,185 @@ def _render_status_and_history(output_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_survey(output_dir: str, scan: dict) -> None:
-    """Render literature survey outputs."""
     ri_dir = os.path.join(output_dir, "related_info")
-    if not os.path.isdir(ri_dir):
+    log_dir = os.path.join(output_dir, "literature_survey_log")
+    if not (os.path.isdir(ri_dir) or os.path.isdir(log_dir)):
         return
 
     st.subheader("Stage 0: Literature Survey")
-
     _show_file("Difficulty Evaluation",
                os.path.join(ri_dir, "difficulty_evaluation.md"), output_dir)
     _show_file("Related Work",
                os.path.join(ri_dir, "related_work.md"), output_dir)
+    _show_file("Survey Error",
+               os.path.join(ri_dir, "error_literature_survey.md"), output_dir,
+               as_code=True)
     _show_file("Survey Log (tail)",
-               os.path.join(output_dir, "literature_survey_log", "AUTO_RUN_LOG.txt"),
-               output_dir, as_code=True)
+               os.path.join(log_dir, "AUTO_RUN_LOG.txt"),
+               output_dir, as_code=True, tail=True)
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: Rounds
+# Stage 1: Attempt → Revision → Proof tree
 # ---------------------------------------------------------------------------
 
-def _step_badge(done: bool, label: str) -> str:
-    if done:
-        return f":green[{label}: Done]"
-    return f":orange[{label}: Pending]"
+def _proof_label(proof: dict, is_current: bool) -> str:
+    if is_current:
+        return f"Proof {proof['num']} — current"
+    if proof["detailed_verification"]:
+        return f"Proof {proof['num']} — detailed verified"
+    if proof["structural_verification"]:
+        return f"Proof {proof['num']} — structural verified"
+    if proof["proof_md"]:
+        return f"Proof {proof['num']} — written"
+    return f"Proof {proof['num']} — empty"
 
 
-def _render_model_files(model_dir: str, model_name: str,
-                        output_dir: str) -> None:
-    """Render all files for a single model within a round."""
-    _show_file(f"Proof ({model_name})",
-               os.path.join(model_dir, "proof.md"), output_dir)
-    _show_file(f"Proof Status ({model_name})",
-               os.path.join(model_dir, "proof_status.md"), output_dir)
-    _show_file(f"Scratch Pad ({model_name})",
-               os.path.join(model_dir, "scratch_pad.md"), output_dir)
+def _render_proof(proof: dict, output_dir: str, is_current: bool) -> None:
+    label = _proof_label(proof, is_current)
+    rel = _file_link(proof["dir"], output_dir)
+    with st.expander(f"{label}  `{rel}/`", expanded=is_current):
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(_badge(proof["proof_md"], "Proof"))
+        c2.markdown(_badge(proof["structural_verification"], "Structural"))
+        c3.markdown(_badge(proof["detailed_verification"], "Detailed"))
 
-    # Structural verification
-    s_dir = os.path.join(model_dir, "verification_file", "structural")
-    for vf in find_verification_files(s_dir):
-        _show_file(f"Structural Verification ({model_name})", vf, output_dir)
+        _show_file("Proof",
+                   os.path.join(proof["dir"], "proof.md"), output_dir)
+        _show_file("Prover Response",
+                   os.path.join(proof["dir"], "prover_response.md"), output_dir)
+        _show_file("Scratchpad",
+                   os.path.join(proof["dir"], "scratchpad.md"), output_dir)
+        _show_file("Structural Verification",
+                   os.path.join(proof["dir"], "structural_verification.md"), output_dir)
+        _show_file("Detailed Verification",
+                   os.path.join(proof["dir"], "detailed_verification.md"), output_dir)
+        _show_file("Regulator Decision",
+                   os.path.join(proof["dir"], "regulator_decision.md"), output_dir)
+        for name in proof["error_files"]:
+            _show_file(name.replace(".md", "").replace("_", " ").title(),
+                       os.path.join(proof["dir"], name),
+                       output_dir, as_code=True)
 
-    # Detailed verification
-    d_dir = os.path.join(model_dir, "verification_file", "detailed")
-    for vf in find_verification_files(d_dir):
-        _show_file(f"Detailed Verification ({model_name})", vf, output_dir)
 
+def _render_revision(revision: dict, output_dir: str,
+                     current_revision: int | None,
+                     current_proof: int | None) -> None:
+    is_current_rev = (current_revision is not None
+                      and current_revision == revision["num"])
+    rel = _file_link(revision["dir"], output_dir)
 
-def _render_round_human_help(round_dir: str, round_num: int,
-                             output_dir: str) -> None:
-    """Render guidance used by this round and editable help for the next round."""
-    verify_dir = os.path.join(output_dir, "verification")
-    global_hh_dir = os.path.join(output_dir, "human_help")
+    label = f"Revision {revision['num']}"
+    if is_current_rev:
+        label += " — current"
+    elif revision["proofs"]:
+        label += f" — {len(revision['proofs'])} proof(s)"
 
-    # --- 1. Guidance used by THIS round's prover/verifier (read-only) ---
-    # The pipeline reads: global help + round_{N-1}/human_help/
-    with st.expander(
-        f"Guidance Used by Round {round_num} (read-only)",
-        expanded=False,
-    ):
-        st.caption(
-            f"Round {round_num}'s prover reads the **global** human help "
-            f"plus **round {round_num - 1}**'s per-round help."
-            if round_num > 1
-            else f"Round {round_num}'s prover reads the **global** human help "
-                 f"(no previous round)."
-        )
-
-        # Global prove help
-        global_prove = os.path.join(global_hh_dir, "additional_prove_human_help_global.md")
-        global_prove_content = read_file(global_prove).strip()
-        st.markdown(f"**Global Prove Guidance** `{_file_link(global_prove, output_dir)}`")
-        if global_prove_content:
-            st.code(global_prove_content, language="markdown")
-        else:
-            st.caption("(empty)")
-
-        # Global verify rules
-        global_verify = os.path.join(global_hh_dir, "additional_verify_rule_global.md")
-        global_verify_content = read_file(global_verify).strip()
-        st.markdown(f"**Global Verify Rules** `{_file_link(global_verify, output_dir)}`")
-        if global_verify_content:
-            st.code(global_verify_content, language="markdown")
-        else:
-            st.caption("(empty)")
-
-        # Previous round's per-round help (read by this round)
-        if round_num > 1:
-            prev_hh_dir = os.path.join(verify_dir, f"round_{round_num - 1}", "human_help")
-            prev_prove = os.path.join(prev_hh_dir, "additional_prove_human_help_per_round.md")
-            prev_verify = os.path.join(prev_hh_dir, "additional_verify_rule_per_round.md")
-
-            prev_prove_content = read_file(prev_prove).strip()
-            st.markdown(
-                f"**Per-Round Prove Guidance from Round {round_num - 1}** "
-                f"`{_file_link(prev_prove, output_dir)}`"
+    with st.expander(f"{label}  `{rel}/`", expanded=is_current_rev):
+        if revision["decomposition_yaml"]:
+            _show_file("Decomposition YAML",
+                       revision["decomposition_yaml"], output_dir,
+                       as_code=True)
+        if revision["decomposer_response"]:
+            _show_file("Decomposer Response",
+                       revision["decomposer_response"], output_dir)
+        if not revision["proofs"]:
+            st.caption("No proofs yet.")
+            return
+        for proof in revision["proofs"]:
+            is_current_proof = (
+                is_current_rev
+                and current_proof is not None
+                and current_proof == proof["num"]
             )
-            if prev_prove_content:
-                st.code(prev_prove_content, language="markdown")
-            else:
-                st.caption("(empty)")
+            _render_proof(proof, output_dir, is_current_proof)
 
-            prev_verify_content = read_file(prev_verify).strip()
-            st.markdown(
-                f"**Per-Round Verify Rules from Round {round_num - 1}** "
-                f"`{_file_link(prev_verify, output_dir)}`"
+
+def _render_attempt(attempt: dict, output_dir: str,
+                    state: dict) -> None:
+    is_current = (state["current_attempt"] is not None
+                  and state["current_attempt"] == attempt["num"])
+
+    n_rev = len(attempt["revisions"])
+    label = f"Attempt {attempt['num']}"
+    if is_current:
+        label += f" — current ({state['state_label'] or 'in progress'})"
+    elif n_rev:
+        label += f" — {n_rev} revision(s)"
+
+    rel = _file_link(attempt["dir"], output_dir)
+    with st.expander(f"{label}  `{rel}/`", expanded=is_current):
+        if not attempt["revisions"]:
+            st.caption("No revisions yet.")
+            return
+        for revision in attempt["revisions"]:
+            _render_revision(
+                revision, output_dir,
+                state["current_revision"] if is_current else None,
+                state["current_proof"] if is_current else None,
             )
-            if prev_verify_content:
-                st.code(prev_verify_content, language="markdown")
-            else:
-                st.caption("(empty)")
-
-    # --- 2. Editable per-round help for the NEXT round ---
-    hh_dir = os.path.join(round_dir, "human_help")
-    prove_path = os.path.join(hh_dir, "additional_prove_human_help_per_round.md")
-    verify_path = os.path.join(hh_dir, "additional_verify_rule_per_round.md")
-
-    prove_rel = _file_link(prove_path, output_dir)
-    verify_rel = _file_link(verify_path, output_dir)
-
-    with st.expander(
-        f"Human Help for Round {round_num + 1} (editable)  "
-        f"`{_file_link(hh_dir, output_dir)}/`",
-        expanded=False,
-    ):
-        st.caption(
-            f"This guidance will be read by **round {round_num + 1}**'s prover "
-            f"and verifier. Click **Save** to write changes to disk."
-        )
-
-        prove_content = read_file(prove_path)
-        new_prove = st.text_area(
-            f"Prove guidance  `{prove_rel}`",
-            value=prove_content,
-            height=150,
-            key=f"hh_prove_r{round_num}",
-        )
-
-        verify_content = read_file(verify_path)
-        new_verify = st.text_area(
-            f"Verify rules  `{verify_rel}`",
-            value=verify_content,
-            height=150,
-            key=f"hh_verify_r{round_num}",
-        )
-
-        if st.button(f"Save Round {round_num} Human Help",
-                      key=f"hh_save_r{round_num}"):
-            write_file(prove_path, new_prove)
-            write_file(verify_path, new_verify)
-            st.success(f"Saved human help for round {round_num}.")
 
 
-def _render_rounds(scan: dict, output_dir: str) -> None:
-    """Render the round-by-round timeline with all files."""
-    if not scan["rounds"]:
+def _render_decomposition_tree(scan: dict, output_dir: str) -> None:
+    if not (scan["attempts"]
+            or os.path.isdir(decomp_root(output_dir))):
         return
 
-    st.subheader("Stage 1: Proof Loop")
+    st.subheader("Stage 1: Decomposition Loop")
 
-    for r in scan["rounds"]:
-        num = r["num"]
-        verdict = r["verdict"]
-        if verdict == "PASS":
-            status_text = "PASS"
-        elif verdict == "FAIL":
-            status_text = "FAIL"
-        elif r["detailed_done"]:
-            status_text = "Verified"
-        elif r["proof_done"]:
-            status_text = "Verifying..."
-        else:
-            status_text = "In Progress..."
+    state = scan["decomposition_state"]
+    if not scan["attempts"]:
+        st.caption("Decomposition directory exists but no attempts have been written yet.")
+    else:
+        for attempt in scan["attempts"]:
+            _render_attempt(attempt, output_dir, state)
 
-        parallel_tag = " (parallel)" if r["is_parallel"] else ""
-        round_dir = os.path.join(output_dir, "verification", f"round_{num}")
-        rel_round = _file_link(round_dir, output_dir)
-
-        with st.expander(
-            f"Round {num}{parallel_tag} -- {status_text}  `{rel_round}/`",
-            expanded=(num == len(scan["rounds"])),
-        ):
-            # Step badges
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(_step_badge(r["proof_done"], "Proof Search"))
-            c2.markdown(_step_badge(r["structural_done"], "Structural Verify"))
-            c3.markdown(_step_badge(r["detailed_done"], "Detailed Verify"))
-            if verdict:
-                st.markdown(f"**Verdict:** {verdict}")
-
-            # Per-model files (parallel) or single-model files
-            if r["is_parallel"]:
-                for m in MODEL_PROVIDERS:
-                    mdir = os.path.join(round_dir, m)
-                    if os.path.isdir(mdir):
-                        st.markdown(f"---\n**Model: {m}**")
-                        _render_model_files(mdir, m, output_dir)
-                # Selection
-                _show_file("Selection",
-                           os.path.join(round_dir, "selection.md"), output_dir)
-            else:
-                # Single-model: files are directly in round_dir
-                _show_file("Proof",
-                           os.path.join(round_dir, "proof.md"), output_dir)
-                _show_file("Proof Status",
-                           os.path.join(round_dir, "proof_status.md"), output_dir)
-                _show_file("Scratch Pad",
-                           os.path.join(round_dir, "scratch_pad.md"), output_dir)
-                # Verification
-                s_dir = os.path.join(round_dir, "verification_file", "structural")
-                for vf in find_verification_files(s_dir):
-                    _show_file("Structural Verification", vf, output_dir)
-                d_dir = os.path.join(round_dir, "verification_file", "detailed")
-                for vf in find_verification_files(d_dir):
-                    _show_file("Detailed Verification", vf, output_dir)
-                # Legacy layout
-                for vf in find_verification_files(round_dir):
-                    _show_file("Verification", vf, output_dir)
-
-            # Per-round human help — editable
-            _render_round_human_help(round_dir, num, output_dir)
-
-    # Proof loop agent logs
-    _show_file("Proof Loop Log (tail)",
-               os.path.join(output_dir, "verification", "AUTO_RUN_LOG.txt"),
-               output_dir, as_code=True)
+    decomp_dir = decomp_root(output_dir)
+    _show_file("Decomposition Log (tail)",
+               os.path.join(decomp_dir, "log.txt"), output_dir,
+               as_code=True, tail=True)
+    _show_file("Plan History",
+               os.path.join(decomp_dir, "plan_history.md"), output_dir)
 
 
 # ---------------------------------------------------------------------------
-# Final proof & summary
+# Final outputs
 # ---------------------------------------------------------------------------
 
-def _render_proof(output_dir: str, scan: dict) -> None:
-    """Render the current proof."""
-    if not scan["proof_content"]:
-        return
-    proof_path = os.path.join(output_dir, "proof.md")
-    rel = _file_link(proof_path, output_dir)
-    with st.expander(f"Current Proof  `{rel}`", expanded=False):
-        st.markdown(scan["proof_content"])
-
-
-def _render_summary(output_dir: str) -> None:
-    """Render proof effort summary."""
+def _render_final(output_dir: str, scan: dict) -> None:
+    st.subheader("Final Outputs")
+    if scan["final_proof"].strip():
+        proof_path = os.path.join(output_dir, "proof.md")
+        rel = _file_link(proof_path, output_dir)
+        with st.expander(f"Final Proof  `{rel}`", expanded=scan["pipeline_complete"]):
+            st.markdown(scan["final_proof"])
     _show_file("Proof Effort Summary",
-               os.path.join(output_dir, "proof_effort_summary.md"), output_dir)
+               os.path.join(output_dir, "proof_effort_summary.md"),
+               output_dir, expanded=scan["pipeline_complete"])
+    _show_file("Summary Error",
+               os.path.join(output_dir, "error_proof_effort_summary.md"),
+               output_dir, as_code=True)
+    if scan["failure_analysis"].strip():
+        rel = _file_link(
+            os.path.join(decomp_root(output_dir), "failure_analysis.md"),
+            output_dir,
+        )
+        with st.expander(f"Failure Analysis  `{rel}`", expanded=True):
+            st.markdown(scan["failure_analysis"])
     _show_file("Summary Log (tail)",
                os.path.join(output_dir, "summary_log", "AUTO_RUN_LOG.txt"),
-               output_dir, as_code=True)
+               output_dir, as_code=True, tail=True)
+    _show_file("Token Usage",
+               os.path.join(output_dir, "TOKEN_USAGE.md"),
+               output_dir)
 
 
 # ---------------------------------------------------------------------------
-# Token usage
-# ---------------------------------------------------------------------------
-
-def _render_token_usage(output_dir: str, scan: dict) -> None:
-    """Render token usage from TOKEN_USAGE.md."""
-    tu_path = os.path.join(output_dir, "TOKEN_USAGE.md")
-    _show_file("Token Usage", tu_path, output_dir)
-
-
-# ---------------------------------------------------------------------------
-# Main
+# Main entry point
 # ---------------------------------------------------------------------------
 
 def render_progress(output_dir: str, run_active: bool = False) -> dict:
-    """Main progress rendering function. Returns the scan result dict."""
+    """Render the full progress view and return the scan dict."""
     scan = scan_progress(output_dir)
 
     if not scan["exists"]:
@@ -565,14 +552,9 @@ def render_progress(output_dir: str, run_active: bool = False) -> dict:
             st.info("Output directory does not exist yet. Click **Run** to start.")
         return scan
 
-    # Smoke test status (always shown first)
     smoke = render_smoke_test(output_dir, run_active)
-
-    # If smoke test hasn't finished yet, don't render pipeline progress
     if not smoke["finished"]:
         return scan
-
-    # If smoke test failed, stop here
     if not smoke["ok"]:
         return scan
 
@@ -580,9 +562,7 @@ def render_progress(output_dir: str, run_active: bool = False) -> dict:
     _render_metrics(scan)
     _render_status_and_history(output_dir)
     _render_survey(output_dir, scan)
-    _render_rounds(scan, output_dir)
-    _render_proof(output_dir, scan)
-    _render_summary(output_dir)
-    _render_token_usage(output_dir, scan)
+    _render_decomposition_tree(scan, output_dir)
+    _render_final(output_dir, scan)
 
     return scan

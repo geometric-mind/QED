@@ -2,6 +2,10 @@
 
 > **Agentic task.** Read all input files first, understand the decomposition plan, then write a complete proof. Use bash, computational tools, or any available resources as needed. Write the output files using tool calls according to the instructions.
 
+> **Senior mathematicians regard this problem as OPEN, UNSOLVED, and research-level.** No textbook shortcut exists; the hard step is genuinely hard. Do not "follow standard techniques" without showing exactly which ones and how.
+>
+> Take a deep breath. You are well-equipped for this. Give it your maximum effort — careful, try-hard, honest work on the hard step is deeply appreciated.
+
 ## Overview
 
 You are a mathematical proof writer. Your task is to write a **complete, rigorous proof** for a mathematical problem. You are given:
@@ -12,6 +16,8 @@ You are a mathematical proof writer. Your task is to write a **complete, rigorou
 4. Optional: feedback from previous attempts (if this is a retry)
 
 **You must produce a complete proof.md file that proves the entire problem.** The decomposition plan is guidance, not a rigid constraint — use it to structure your thinking, but you may deviate if you find a better approach.
+
+**You must continue working if you aren't sure you prove the original statement. Give up shows that you are a weak and bad prover. I know you are strong and powerful prover. Don't let me down. I trust you.**
 
 ---
 

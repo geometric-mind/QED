@@ -1,4 +1,4 @@
-"""Subprocess management: launch, kill, and resume the QED pipeline."""
+"""Subprocess management and resume cleanup for decomposition-mode runs."""
 
 import os
 import shutil
@@ -10,16 +10,19 @@ from utils import (
     RUN_SH,
     ACTIVE_CONFIG_PATH,
     save_config,
-    file_nonempty,
-    find_verification_files,
-    is_parallel_round,
-    list_round_dirs,
     is_survey_complete,
+    decomp_root,
+    attempt_dir,
+    revision_dir,
+    proof_dir,
+    list_attempt_dirs,
+    list_revision_dirs,
+    list_proof_dirs,
 )
 
 
 # ---------------------------------------------------------------------------
-# Launch / kill
+# Launch / kill (pipeline-agnostic, reused from archived)
 # ---------------------------------------------------------------------------
 
 def start_pipeline(
@@ -29,12 +32,9 @@ def start_pipeline(
 ) -> subprocess.Popen:
     """Start the pipeline as a background subprocess.
 
-    1. Writes *config* to ``.config_run_active.yaml`` at project root.
-    2. Invokes ``run.sh <problem_file> <output_dir> <config_path>``.
-    3. Returns the ``Popen`` object.
-
-    stdout/stderr are redirected to a log file inside *output_dir* to avoid
-    blocking on a full pipe buffer.
+    Writes *config* to ``.config_run_active.yaml`` at project root, then
+    invokes ``run.sh <problem_file> <output_dir> <config_path>``. stdout
+    and stderr are redirected to ``<output_dir>/pipeline_stdout.log``.
     """
     save_config(config, ACTIVE_CONFIG_PATH)
     config_abs = os.path.abspath(ACTIVE_CONFIG_PATH)
@@ -52,12 +52,11 @@ def start_pipeline(
         preexec_fn=os.setsid,
         cwd=PROJECT_ROOT,
     )
-    # Attach the file handle so we can close it later
     proc._log_fh = log_fh
     return proc
 
 
-def kill_pipeline(proc: subprocess.Popen) -> None:
+def kill_pipeline(proc: subprocess.Popen | None) -> None:
     """Kill the pipeline and its entire process tree."""
     if proc is None or proc.poll() is not None:
         _close_log(proc)
@@ -76,7 +75,6 @@ def kill_pipeline(proc: subprocess.Popen) -> None:
 
 
 def _close_log(proc: subprocess.Popen | None) -> None:
-    """Close the log file handle attached by start_pipeline."""
     if proc is not None and hasattr(proc, "_log_fh"):
         try:
             proc._log_fh.close()
@@ -85,78 +83,68 @@ def _close_log(proc: subprocess.Popen | None) -> None:
 
 
 def is_alive(proc: subprocess.Popen | None) -> bool:
-    """Return True if *proc* is still running."""
     if proc is None:
         return False
     return proc.poll() is None
 
 
 # ---------------------------------------------------------------------------
-# Resume options
+# Resume options (decomposition mode)
 # ---------------------------------------------------------------------------
 
 def get_resume_options(output_dir: str) -> list[dict]:
-    """Scan the output directory and return valid resume points.
+    """Enumerate resume points based on existing on-disk progress.
 
-    Each item: ``{"round": int, "step": str, "label": str}``.
+    Each item:
+
+        {
+            "kind": "scratch"|"after_survey"|"redo_attempt"|"redo_revision"|"redo_proof",
+            "attempt": int|None,
+            "revision": int|None,
+            "proof": int|None,
+            "label": str,
+        }
     """
-    options: list[dict] = []
-
-    # Always offer "from scratch"
-    options.append({
-        "round": 0,
-        "step": "start",
-        "label": "From scratch (delete everything)",
-    })
+    options: list[dict] = [
+        {
+            "kind": "scratch",
+            "attempt": None, "revision": None, "proof": None,
+            "label": "From scratch (delete everything)",
+        }
+    ]
 
     if is_survey_complete(output_dir):
         options.append({
-            "round": 0,
-            "step": "after_survey",
-            "label": "After survey (start Round 1)",
+            "kind": "after_survey",
+            "attempt": None, "revision": None, "proof": None,
+            "label": "After survey (start decomposition from attempt 1)",
         })
 
-    rounds = list_round_dirs(output_dir)
-    for r in rounds:
-        round_dir = os.path.join(output_dir, "verification", f"round_{r}")
-        parallel = is_parallel_round(round_dir)
-
-        # Offer "redo this round from proof search"
+    for n in list_attempt_dirs(output_dir):
+        a_path = attempt_dir(output_dir, n)
         options.append({
-            "round": r,
-            "step": "proof_search",
-            "label": f"Round {r}: Proof Search (redo round)",
+            "kind": "redo_attempt",
+            "attempt": n, "revision": None, "proof": None,
+            "label": f"Redo attempt {n}  (deletes attempt_{n}/ and later)",
         })
-
-        # Check if proof search done
-        if parallel:
-            any_proof = any(
-                file_nonempty(os.path.join(round_dir, m, "proof_status.md"))
-                for m in ("claude", "codex", "gemini")
-                if os.path.isdir(os.path.join(round_dir, m))
-            )
-        else:
-            any_proof = file_nonempty(
-                os.path.join(round_dir, "proof_status.md")
-            )
-
-        if any_proof:
+        for m in list_revision_dirs(a_path):
+            r_path = revision_dir(output_dir, n, m)
             options.append({
-                "round": r,
-                "step": "verification",
-                "label": f"Round {r}: Verification (keep proof, redo verification)",
+                "kind": "redo_revision",
+                "attempt": n, "revision": m, "proof": None,
+                "label": (
+                    f"Attempt {n} / Redo revision {m}  "
+                    f"(deletes revision_{m}/ and later in attempt {n})"
+                ),
             })
-
-            # Check structural done
-            if parallel:
-                s_dir = os.path.join(round_dir, "claude", "verification_file", "structural")
-            else:
-                s_dir = os.path.join(round_dir, "verification_file", "structural")
-            if find_verification_files(s_dir):
+            for k in list_proof_dirs(r_path):
                 options.append({
-                    "round": r,
-                    "step": "detailed_verification",
-                    "label": f"Round {r}: Detailed Verification (keep structural, redo detailed)",
+                    "kind": "redo_proof",
+                    "attempt": n, "revision": m, "proof": k,
+                    "label": (
+                        f"Attempt {n} / Rev {m} / Redo proof {k}  "
+                        f"(deletes proof_{k}/ and later)"
+                    ),
                 })
 
     return options
@@ -166,102 +154,98 @@ def get_resume_options(output_dir: str) -> list[dict]:
 # Resume cleanup
 # ---------------------------------------------------------------------------
 
-def prepare_resume(output_dir: str, target_round: int, target_step: str) -> None:
-    """Clean up the output directory so ``detect_resume_state()`` resumes correctly.
-
-    The pipeline's own resume logic reads file-system state, so we just need
-    to delete files/dirs that represent progress past the desired resume point.
-    """
-    # Always remove Stage 2 outputs (will be regenerated)
-    for name in ("proof_effort_summary.md",):
-        path = os.path.join(output_dir, name)
-        if os.path.exists(path):
+def _rm(path: str) -> None:
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.exists(path):
+        try:
             os.remove(path)
-    summary_log = os.path.join(output_dir, "summary_log")
-    if os.path.isdir(summary_log):
-        shutil.rmtree(summary_log)
+        except OSError:
+            pass
 
-    # "From scratch" — wipe everything
-    if target_step == "start":
-        for d in ("verification", "related_info", "literature_survey_log"):
-            path = os.path.join(output_dir, d)
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-        proof = os.path.join(output_dir, "proof.md")
-        if os.path.exists(proof):
-            os.remove(proof)
-        for name in ("TOKEN_USAGE.md", "token_usage.json"):
-            path = os.path.join(output_dir, name)
-            if os.path.exists(path):
-                os.remove(path)
+
+def _wipe_stage2(output_dir: str) -> None:
+    """Always clear Stage 2 artifacts so the summary agent regenerates them."""
+    for name in ("proof_effort_summary.md", "error_proof_effort_summary.md"):
+        _rm(os.path.join(output_dir, name))
+    _rm(os.path.join(output_dir, "summary_log"))
+    # Top-level proof.md is only written on success; remove so the new run
+    # doesn't believe the prior attempt's proof is still valid.
+    _rm(os.path.join(output_dir, "proof.md"))
+    # Failure marker would block retry logic.
+    _rm(os.path.join(decomp_root(output_dir), "failure_analysis.md"))
+
+
+def prepare_resume(output_dir: str, option: dict) -> None:
+    """Clean up *output_dir* so the next ``start_pipeline`` resumes from *option*.
+
+    The decomposition prover's own ``detect_decomposition_resume`` reads the
+    filesystem to figure out where to continue, so the UI just needs to delete
+    anything past the chosen resume point.
+    """
+    _wipe_stage2(output_dir)
+
+    kind = option.get("kind", "scratch")
+
+    if kind == "scratch":
+        for name in (
+            "decomposition",
+            "related_info",
+            "literature_survey_log",
+            "human_help",
+            "tmp",
+        ):
+            _rm(os.path.join(output_dir, name))
+        for name in (
+            "TOKEN_USAGE.md",
+            "token_usage.json",
+            "pipeline_stdout.log",
+            "problem.tex",
+            "AUTO_RUN_STATUS.md.history",
+        ):
+            _rm(os.path.join(output_dir, name))
         return
 
-    # "After survey" — keep survey, wipe rounds
-    if target_step == "after_survey":
-        verify_dir = os.path.join(output_dir, "verification")
-        if os.path.isdir(verify_dir):
-            shutil.rmtree(verify_dir)
-        proof = os.path.join(output_dir, "proof.md")
-        if os.path.exists(proof):
-            os.remove(proof)
+    if kind == "after_survey":
+        _rm(decomp_root(output_dir))
         return
 
-    verify_dir = os.path.join(output_dir, "verification")
-    if not os.path.isdir(verify_dir):
+    if kind == "redo_attempt":
+        n = option["attempt"]
+        for k in list_attempt_dirs(output_dir):
+            if k >= n:
+                _rm(attempt_dir(output_dir, k))
+        if n == 1:
+            _rm(os.path.join(decomp_root(output_dir), "plan_history.md"))
         return
 
-    # Delete rounds after the target
-    rounds = list_round_dirs(output_dir)
-    for r in rounds:
-        if r > target_round:
-            rd = os.path.join(verify_dir, f"round_{r}")
-            if os.path.isdir(rd):
-                shutil.rmtree(rd)
-
-    round_dir = os.path.join(verify_dir, f"round_{target_round}")
-    if not os.path.isdir(round_dir):
+    if kind == "redo_revision":
+        n, m = option["attempt"], option["revision"]
+        # Delete every later attempt entirely.
+        for k in list_attempt_dirs(output_dir):
+            if k > n:
+                _rm(attempt_dir(output_dir, k))
+        # Inside this attempt, delete revision m and later.
+        a_path = attempt_dir(output_dir, n)
+        for j in list_revision_dirs(a_path):
+            if j >= m:
+                _rm(os.path.join(a_path, f"revision_{j}"))
         return
 
-    if target_step == "proof_search":
-        # Delete the entire round — pipeline will redo from proof search
-        # First restore proof.md from backup if available
-        backup = os.path.join(round_dir, "proof_before_round.md")
-        proof_file = os.path.join(output_dir, "proof.md")
-        if os.path.exists(backup):
-            shutil.copy2(backup, proof_file)
-        shutil.rmtree(round_dir)
-
-    elif target_step == "verification":
-        # Keep proof_status.md and proof files, delete all verification
-        if is_parallel_round(round_dir):
-            for m in ("claude", "codex", "gemini"):
-                vf_dir = os.path.join(round_dir, m, "verification_file")
-                if os.path.isdir(vf_dir):
-                    shutil.rmtree(vf_dir)
-        else:
-            vf_dir = os.path.join(round_dir, "verification_file")
-            if os.path.isdir(vf_dir):
-                shutil.rmtree(vf_dir)
-            # Also clean legacy verification files in round dir itself
-            for name in os.listdir(round_dir):
-                if name.startswith("verification_result"):
-                    os.remove(os.path.join(round_dir, name))
-        # Remove selection.md for parallel rounds
-        sel = os.path.join(round_dir, "selection.md")
-        if os.path.exists(sel):
-            os.remove(sel)
-
-    elif target_step == "detailed_verification":
-        # Keep structural, delete detailed
-        if is_parallel_round(round_dir):
-            for m in ("claude", "codex", "gemini"):
-                d_dir = os.path.join(round_dir, m, "verification_file", "detailed")
-                if os.path.isdir(d_dir):
-                    shutil.rmtree(d_dir)
-        else:
-            d_dir = os.path.join(round_dir, "verification_file", "detailed")
-            if os.path.isdir(d_dir):
-                shutil.rmtree(d_dir)
-        sel = os.path.join(round_dir, "selection.md")
-        if os.path.exists(sel):
-            os.remove(sel)
+    if kind == "redo_proof":
+        n, m, k_target = option["attempt"], option["revision"], option["proof"]
+        # Delete every later attempt entirely.
+        for a in list_attempt_dirs(output_dir):
+            if a > n:
+                _rm(attempt_dir(output_dir, a))
+        # Inside this attempt, delete every later revision.
+        a_path = attempt_dir(output_dir, n)
+        for j in list_revision_dirs(a_path):
+            if j > m:
+                _rm(os.path.join(a_path, f"revision_{j}"))
+        # Inside this revision, delete this proof and later.
+        r_path = revision_dir(output_dir, n, m)
+        for p in list_proof_dirs(r_path):
+            if p >= k_target:
+                _rm(os.path.join(r_path, f"proof_{p}"))
+        return

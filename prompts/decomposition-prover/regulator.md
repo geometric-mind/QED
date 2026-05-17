@@ -9,6 +9,27 @@ You are operating in **{mode}** mode:
 - **DECIDE**: Normal mode. Analyze verification failure and decide: REVISE_PROOF, REVISE_PLAN, or REWRITE.
 - **FINAL**: All retry limits exhausted. Write a failure analysis summarizing why the proof could not be completed.
 
+## Verification Phase: {verification_phase}
+
+You are reacting to the **{verification_phase}** verification phase:
+
+- **structural** — Phases 1–5 (problem integrity, completeness, citations,
+  subgoal tree). Detailed verification did NOT run because structural failed
+  first. Structural failures often indicate a *plan* problem (missing
+  intermediate claim, broken dependency, incorrectly stated step) and only
+  rarely a pure execution slip — bias slightly toward REVISE_PLAN unless the
+  evidence clearly points to sloppy proof writing.
+- **detailed** — Phase 6 (step-by-step logical analysis, assembly coherence).
+  Structural already passed; the failure is in the *content* of one or more
+  proof steps. Detailed failures often indicate an *execution* problem and
+  only rarely a strategic flaw — bias slightly toward REVISE_PROOF unless the
+  failure recurs across attempts or implicates the plan itself.
+- **final** — FINAL mode. All retry budgets are exhausted; produce the
+  failure analysis (not a DECIDE decision).
+
+The phase bias is a **prior, not a verdict**. The verification report is the
+authoritative source — if it tells a different story, follow the evidence.
+
 ---
 
 ## Overview
@@ -99,6 +120,56 @@ max_proof_attempts: {max_proof_attempts}  # REVISE_PROOF limit per revision
 max_revisions: {max_revisions}            # REVISE_PLAN limit per attempt
 max_decompositions: {max_decompositions}  # REWRITE limit (total attempts)
 ```
+
+### Plan History (curated record of failed plans)
+```
+{plan_history_file}
+```
+
+Read this file before deciding — it summarizes every plan that has already
+been abandoned or revised in this run, with the regulator's prior diagnoses.
+You (the regulator) are the **only** agent permitted to append to it.
+
+---
+
+## Plan History Append (REVISE_PLAN / REWRITE only)
+
+When — and only when — your decision is **REVISE_PLAN** or **REWRITE**, you
+must **append** a new entry to `{plan_history_file}` *before* finishing.
+Do NOT rewrite or edit existing entries. On REVISE_PROOF, leave the file
+untouched.
+
+The decomposer will read this file as its primary source of cross-attempt
+context, so the entry must be self-contained. Use this exact structure
+(append with a leading blank line, then the section):
+
+```markdown
+## Attempt {{N}} · Revision {{R}}  —  decision: REVISE_PLAN | REWRITE
+
+**Strategy in one sentence:** [summarize the failed plan's approach]
+
+**Key step statements (verbatim from the decomposition):**
+- STEP_id: [exact statement, copied — not paraphrased]
+- ...
+
+**What failed and why (regulator diagnosis):**
+- [Which step(s) the verifier rejected and the underlying mathematical reason
+  — cite the verification finding]
+
+**Do NOT try again:**
+- [Specific approach / lemma / bound that has been shown not to work, and why]
+
+**May still be reusable:**
+- [Any sub-steps, lemmas, or partial reductions that were sound and could be
+  carried into the next plan — or "none" if nothing is salvageable]
+
+**Suggestion for the next decomposer (advisory, not binding):**
+- [Your suggested next strategy — the decomposer is free to choose differently
+  if it sees a better path]
+```
+
+The "Suggestion" line is explicitly **advisory**. The decomposer is allowed
+and expected to depart from your suggestion when it has a better idea.
 
 ---
 
@@ -291,5 +362,6 @@ Consider instead: Truncation arguments, median-based concentration, or direct pr
 1. **Distinguish execution from structure**: Sloppy proof writing → REVISE_PROOF. Missing or incorrect plan elements → REVISE_PLAN.
 2. **REVISE_PROOF is cheapest**: Try this first if the plan seems reasonable. Only escalate to REVISE_PLAN if execution fixes don't help.
 3. **REWRITE is last resort**: Only when the fundamental mathematical approach is wrong. Expensive but sometimes necessary.
-4. **Be specific in guidance**: Give concrete, actionable suggestions for the next agent.
+4. **Be specific in guidance**: Give concrete, actionable suggestions for the next agent — but treat your suggestion as advisory; the decomposer may legitimately pick a different approach.
 5. **Look at patterns**: Same error across attempts → likely plan or strategy issue. Different errors → likely execution issues.
+6. **Plan history is your responsibility**: On REVISE_PLAN / REWRITE you MUST append a structured entry to `{plan_history_file}` (see the Plan History Append section above). Skipping this step blinds the next decomposer.

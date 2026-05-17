@@ -4,7 +4,7 @@
 
 ## Overview
 
-You are a mathematical research assistant tasked with writing a comprehensive summary of an entire proof effort. The pipeline has finished — either the proof was verified successfully or the maximum number of iterations was reached.
+You are a mathematical research assistant tasked with writing a comprehensive summary of an entire proof effort. The pipeline has finished — either the proof was verified successfully or the retry limits were exhausted.
 
 Your job is to read **all** generated files in the output directory and produce a clear, informative summary of what happened.
 
@@ -21,14 +21,14 @@ Write a summary to `{summary_file}` in Markdown. The summary should be useful to
 - If PASS: summarize the proof strategy and key insight in 2-3 sentences.
 - If FAIL: summarize the best attempt and what remains unresolved.
 
-### 3. Round-by-Round Summary
-For each round, write 2-3 sentences covering:
-- What approach was tried
-- What the verification found (pass/fail, specific issues)
-- What changed between this round and the next
+### 3. Attempt-by-Attempt Summary
+The decomposition pipeline structures work as `attempt → revision → proof`. For each `decomposition/attempt_*/revision_*/proof_*` directory, write 2-3 sentences covering:
+- What approach the decomposition plan took (read `decomposition.yaml` and `decomposer_response.md`)
+- What the prover produced and what the verifiers found (`structural_verification.md`, `detailed_verification.md`)
+- What the regulator decided next (`regulator_decision.md`): REVISE_PROOF, REVISE_PLAN, or REWRITE — and why
 
 ### 4. Approaches Tried
-- List every distinct proof strategy that was attempted across all rounds.
+- List every distinct decomposition / proof strategy that was attempted.
 - For each one, note whether it was abandoned (and why) or carried forward.
 
 ### 5. Key Mathematical Insights
@@ -38,7 +38,7 @@ For each round, write 2-3 sentences covering:
 
 ### 6. Resource Usage
 - Summarize token usage from `TOKEN_USAGE.md` (total tokens, number of agent calls).
-- How many rounds were used out of the maximum allowed.
+- How many decomposition attempts and proof attempts were used out of the maximum allowed.
 
 ## Format
 
@@ -65,8 +65,14 @@ Read every relevant file in this directory and its subdirectories. Key files inc
 | `proof.md` | The final proof (or best attempt) |
 | `related_info/difficulty_evaluation.md` | Difficulty classification (Easy/Medium/Hard) and justification |
 | `related_info/related_work.md` | Related papers, applicable theorems, and known results |
-| `verification/round_*/proof_status.md` | What each round tried and learned |
-| `verification/round_*/verification_result.md` | Verification verdict for each round |
+| `decomposition/STATUS.md` | Final decomposition state |
+| `decomposition/log.txt` | Timeline of every decomposition agent call |
+| `decomposition/attempt_*/revision_*/decomposition.yaml` | The proof plan for each revision |
+| `decomposition/attempt_*/revision_*/proof_*/proof.md` | Each proof attempt |
+| `decomposition/attempt_*/revision_*/proof_*/structural_verification.md` | Phases 1-5 verifier output |
+| `decomposition/attempt_*/revision_*/proof_*/detailed_verification.md` | Phase 6 verifier output |
+| `decomposition/attempt_*/revision_*/proof_*/regulator_decision.md` | What the regulator chose (REVISE_PROOF / REVISE_PLAN / REWRITE) |
+| `decomposition/failure_analysis.md` | Written only when all retry limits were exhausted |
 | `TOKEN_USAGE.md` | Token usage across all agent calls |
 
 ## HERE ARE THE OUTPUT FILE PATHS:
@@ -77,7 +83,7 @@ Read every relevant file in this directory and its subdirectories. Key files inc
 **Write the summary file incrementally.** Do NOT try to write the entire file in a single tool call — this will fail silently due to content-size limits. Instead:
 
 1. **First call:** Write the file header and sections 1–2 (Problem Overview, Final Proof Status) to `{summary_file}`.
-2. **Then append:** Append section 3 (Round-by-Round Summary) to `{summary_file}` using shell `cat >> "{summary_file}" << 'ENDOFBLOCK'` or Python `open(..., "a")`.
+2. **Then append:** Append section 3 (Attempt-by-Attempt Summary) to `{summary_file}` using shell `cat >> "{summary_file}" << 'ENDOFBLOCK'` or Python `open(..., "a")`.
 3. **Then append:** Append sections 4–5 (Approaches Tried, Key Mathematical Insights).
 4. **Then append:** Append section 6 (Resource Usage).
 
@@ -86,8 +92,9 @@ Read every relevant file in this directory and its subdirectories. Key files inc
 ## Pipeline Result
 
 **Outcome:** {outcome}
-**Total rounds used:** {total_rounds}
-**Maximum rounds allowed:** {max_rounds}
+**Total decomposition attempts used:** {total_attempts}
+**Total proof attempts used:** {total_proofs}
+**Maximum decomposition attempts allowed:** {max_attempts}
 
 ## Error Log
 

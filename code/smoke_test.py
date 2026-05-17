@@ -16,6 +16,7 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pipeline import load_prompt, make_claude_options
+from decomposition_prover import load_prompt as decomp_load_prompt
 
 
 async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
@@ -57,11 +58,8 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     # -------------------------------------------------------
     print("\n=== Test 1: Prompt files ===")
     prompt_files = [
-        "literature_survey.md", "proof_search.md",
-        "proof_verify_structural.md", "proof_verify_detailed.md",
-        "proof_verify_easy.md",
-        "proof_select.md", "verdict_proof.md", "proof_effort_summary.md",
-        "brainstorm.md",
+        "literature_survey.md",
+        "proof_effort_summary.md",
     ]
     for pf in prompt_files:
         exists = os.path.exists(os.path.join(prompts_dir, pf))
@@ -99,6 +97,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             problem_file="/tmp/test_problem.tex",
             related_info_dir="/tmp/test_output/related_info",
             output_dir="/tmp/test_output",
+            proof_file="/tmp/test_output/proof.md",
             error_file="/tmp/test_output/error_literature_survey.md",
         )
         check("literature_survey.md renders OK", "test_problem.tex" in prompt)
@@ -107,106 +106,12 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
 
     try:
         prompt = load_prompt(
-            prompts_dir, "proof_search.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            output_dir="/tmp/test_output",
-            related_info_dir="/tmp/test_output/related_info",
-            round_num=1,
-            proof_status_file="/tmp/test_status.md",
-            previous_round_instructions="- This is the first round.",
-            human_help_dir="/tmp/human_help",
-            prev_round_human_help_dir="",
-            skill_file=os.path.join(skill_dir, "super_math_skill.md"),
-            scratch_pad_file="/tmp/test_output/verification/round_1/scratch_pad.md",
-            error_file="/tmp/test_output/verification/round_1/error_proof_search.md",
-            brainstorm_dir="/tmp/test_output/verification/round_1/brainstorm",
-        )
-        check("proof_search.md renders OK", "test_problem.tex" in prompt)
-        check("No unresolved placeholders", "{problem_file}" not in prompt, "Found unresolved {problem_file}")
-    except Exception as e:
-        check("proof_search.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "brainstorm.md",
-            problem_file="/tmp/test_problem.tex",
-            related_info_dir="/tmp/test_output/related_info",
-            proof_file="/tmp/test_proof.md",
-            prev_verification_dir="",
-            round_num=1,
-            output_file="/tmp/test_output/verification/round_1/brainstorm/brainstorm_result_claude.md",
-            error_file="/tmp/test_output/verification/round_1/brainstorm/error_brainstorm_claude.md",
-        )
-        check("brainstorm.md renders OK", "test_problem.tex" in prompt)
-        check("brainstorm.md has round num", "round 1" in prompt.lower() or "round {round_num}" not in prompt)
-    except Exception as e:
-        check("brainstorm.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_verify_structural.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            output_file="/tmp/test_verify_structural.md",
-            output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_verify_structural.md",
-            additional_verify_rule_global_file="/tmp/human_help/additional_verify_rule_global.md",
-            additional_verify_rule_prev_round_file="",
-        )
-        check("proof_verify_structural.md renders OK", "test_problem.tex" in prompt)
-        check("proof_verify_structural.md has Phase 1", "Phase 1" in prompt)
-        check("proof_verify_structural.md has Phase 3", "Phase 3" in prompt)
-        check("proof_verify_structural.md has Phase 4", "Phase 4" in prompt)
-    except Exception as e:
-        check("proof_verify_structural.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_verify_detailed.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            structural_report_file="/tmp/test_structural_report.md",
-            output_file="/tmp/test_verify_detailed.md",
-            output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_verify_detailed.md",
-        )
-        check("proof_verify_detailed.md renders OK", "test_problem.tex" in prompt)
-        check("proof_verify_detailed.md has Phase 5", "Phase 5" in prompt)
-        check("proof_verify_detailed.md references structural report",
-              "test_structural_report.md" in prompt)
-    except Exception as e:
-        check("proof_verify_detailed.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_verify_easy.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            output_file="/tmp/test_verify.md",
-            output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_verify_easy.md",
-        )
-        check("proof_verify_easy.md renders OK", "test_problem.tex" in prompt)
-    except Exception as e:
-        check("proof_verify_easy.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "verdict_proof.md",
-            verification_result_file="/tmp/test_verify.md",
-        )
-        check("verdict_proof.md renders OK", "test_verify.md" in prompt)
-    except Exception as e:
-        check("verdict_proof.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
             prompts_dir, "proof_effort_summary.md",
             output_dir="/tmp/test_output",
             outcome="PASS",
-            total_rounds=3,
-            max_rounds=9,
+            total_attempts=2,
+            total_proofs=3,
+            max_attempts=2,
             summary_file="/tmp/test_output/proof_effort_summary.md",
             error_file="/tmp/test_output/error_proof_effort_summary.md",
         )
@@ -225,22 +130,26 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             mode="CREATE",
             problem_file="/tmp/test_problem.tex",
             related_work_file="/tmp/test_related_work.md",
-            difficulty_file="/tmp/test_difficulty.md",
-            revision_context="",
             problem_id="test_problem",
             attempt_number=1,
             revision_number=1,
             timestamp="2024-01-01T00:00:00",
             output_file="/tmp/test_decomposition.yaml",
-            current_decomposition_file="/tmp/test_decomposition.yaml",
+            current_decomposition_file="",
             verification_feedback="",
             regulator_guidance="",
             previous_proof_file="",
-            failure_history_file="/tmp/test_failure_history.md",
             human_help_file="/tmp/test_human_help.md",
+            plan_history_file="/tmp/test_plan_history.md",
         )
         check("decomposition.md renders OK", "test_problem.tex" in prompt)
         check("decomposition.md has mode", "CREATE" in prompt)
+        check("decomposition.md references plan history",
+              "plan_history" in prompt or "Plan History" in prompt)
+        check("decomposition.md no longer references difficulty",
+              "difficulty_file" not in prompt and "Difficulty Evaluation" not in prompt)
+        check("decomposition.md no longer references revision_context",
+              "{revision_context}" not in prompt)
     except Exception as e:
         check("decomposition.md renders OK", False, str(e))
 
@@ -275,8 +184,14 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             max_revisions=2,
             max_decompositions=2,
             output_file="/tmp/test_regulator_decision.md",
+            plan_history_file="/tmp/test_plan_history.md",
+            verification_phase="structural",
         )
         check("regulator.md renders OK", "DECIDE" in prompt)
+        check("regulator.md references plan history append",
+              "Plan History Append" in prompt)
+        check("regulator.md surfaces verification_phase",
+              "structural" in prompt and "Verification Phase" in prompt)
     except Exception as e:
         check("regulator.md renders OK", False, str(e))
 
@@ -290,6 +205,35 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("verdict_proof.md (decomp) renders OK", "STRUCTURAL" in prompt)
     except Exception as e:
         check("verdict_proof.md (decomp) renders OK", False, str(e))
+
+    # decomposition_prover.load_prompt MUST render the same output as
+    # pipeline.load_prompt for the templates that the prover uses (these
+    # templates rely on {{...}} escapes intended for str.format).
+    try:
+        a = load_prompt(
+            prompts_dir, "decomposition-prover/regulator.md",
+            mode="DECIDE", state_file="x", decomposition_file="x",
+            proof_file="x", verification_report="", attempt_history="",
+            max_decompositions=4, max_revisions=4, max_proof_attempts=4,
+            output_file="x", plan_history_file="x",
+            verification_phase="structural",
+        )
+        b = decomp_load_prompt(
+            prompts_dir, "decomposition-prover/regulator.md",
+            mode="DECIDE", state_file="x", decomposition_file="x",
+            proof_file="x", verification_report="", attempt_history="",
+            max_decompositions=4, max_revisions=4, max_proof_attempts=4,
+            output_file="x", plan_history_file="x",
+            verification_phase="structural",
+        )
+        check("decomposition_prover.load_prompt matches pipeline.load_prompt",
+              a == b, "Renderer divergence — escapes will not resolve at runtime")
+        check("regulator.md {{N}} escape resolves to {N}",
+              "{N}" in b and "{{N}}" not in b,
+              "Literal '{{N}}' would be sent to the model")
+    except Exception as e:
+        check("decomposition_prover.load_prompt matches pipeline.load_prompt",
+              False, str(e))
 
     # -------------------------------------------------------
     # Test 4: Skill loading
@@ -311,34 +255,24 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     import subprocess
 
     pipeline_cfg_for_use = config.get("pipeline", {})
-    prover_cfg_for_use = config.get("prover", {})
     providers_in_use: set[str] = set()
 
-    mm_cfg_use = pipeline_cfg_for_use.get("multi_model", {})
-    if mm_cfg_use.get("enabled", False):
-        providers_in_use.update(mm_cfg_use.get("providers", []))
-    else:
-        providers_in_use.add("claude")  # default proof search uses claude
+    def _role_provider(role_cfg) -> str | None:
+        if isinstance(role_cfg, dict):
+            p = role_cfg.get("provider")
+            return p.lower() if isinstance(p, str) else None
+        return None
 
-    va_cfg_use = pipeline_cfg_for_use.get("verification_agents", {})
-    if va_cfg_use.get("enabled", False):
-        providers_in_use.update(va_cfg_use.get("providers", []))
-    else:
-        providers_in_use.add("claude")  # default verification uses claude
+    for agent_key in ("literature_survey", "proof_summary"):
+        prov = _role_provider(pipeline_cfg_for_use.get(agent_key))
+        if prov:
+            providers_in_use.add(prov)
 
-    bs_cfg_use = pipeline_cfg_for_use.get("brainstorm", {})
-    if bs_cfg_use.get("enabled", False):
-        providers_in_use.update(bs_cfg_use.get("providers", []))
-
-    for agent_key in ("literature_survey", "proof_select", "proof_summary"):
-        providers_in_use.add(
-            pipeline_cfg_for_use.get(agent_key, {}).get("provider", "claude").lower()
-        )
-
-    if prover_cfg_for_use.get("mode", "simple") == "decomposition":
-        decomp_models = config.get("decomposition", {}).get("models", {})
-        for v in decomp_models.values():
-            providers_in_use.add(str(v).lower())
+    decomp_models = config.get("decomposition", {}).get("models", {})
+    for v in decomp_models.values():
+        prov = _role_provider(v)
+        if prov:
+            providers_in_use.add(prov)
 
     providers_in_use = {p for p in providers_in_use if p in {"claude", "codex", "gemini"}}
 
@@ -446,157 +380,66 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     # -------------------------------------------------------
     print("\n=== Test 6: Config validation ===")
     pipeline_cfg = config.get("pipeline", {})
-    check("max_proof_iterations set", "max_proof_iterations" in pipeline_cfg,
-          "Missing max_proof_iterations in pipeline config")
     check("claude config present", "claude" in config, "Missing claude config")
 
-    # -------------------------------------------------------
-    # Test 6b: Decomposition mode config validation
-    # -------------------------------------------------------
     prover_cfg = config.get("prover", {})
-    prover_mode = prover_cfg.get("mode", "simple")
-    check("prover.mode is valid", prover_mode in ("simple", "decomposition"),
-          f"Invalid prover.mode: {prover_mode}")
+    prover_mode = prover_cfg.get("mode", "decomposition")
+    check("prover.mode is 'decomposition'", prover_mode == "decomposition",
+          f"Only 'decomposition' is supported; got: {prover_mode}")
 
-    if prover_mode == "decomposition":
-        print("\n=== Test 6b: Decomposition config validation ===")
-        decomp_cfg = config.get("decomposition", {})
-        check("decomposition config present", bool(decomp_cfg),
-              "Missing decomposition config when prover.mode=decomposition")
+    print("\n=== Test 6b: Decomposition config validation ===")
+    decomp_cfg = config.get("decomposition", {})
+    check("decomposition config present", bool(decomp_cfg),
+          "Missing decomposition config")
 
-        # Validate model assignments
-        decomp_models = decomp_cfg.get("models", {})
-        valid_providers = {"claude", "codex", "gemini"}
-        required_agents = ["decomposer", "single_prover", "regulator",
-                          "structural_verifier", "detailed_verifier", "verdict"]
-        for agent in required_agents:
-            provider = decomp_models.get(agent, "claude")
-            is_valid = provider.lower() in valid_providers
-            check(f"decomposition.models.{agent} valid ({provider})",
-                  is_valid, f"Invalid provider '{provider}' for {agent}")
-
-        # Validate limits
-        max_proof = decomp_cfg.get("max_proof_attempts", 3)
-        max_rev = decomp_cfg.get("max_revisions", 2)
-        max_decomp = decomp_cfg.get("max_decompositions", 2)
-        check("max_proof_attempts > 0", max_proof > 0, f"Invalid: {max_proof}")
-        check("max_revisions > 0", max_rev > 0, f"Invalid: {max_rev}")
-        check("max_decompositions > 0", max_decomp > 0, f"Invalid: {max_decomp}")
-
-    # -------------------------------------------------------
-    # Test 7: Multi-model prompt (proof_select.md)
-    # -------------------------------------------------------
-    print("\n=== Test 7: Selector prompt ===")
-    select_prompt_path = os.path.join(prompts_dir, "proof_select.md")
-    check("proof_select.md exists", os.path.exists(select_prompt_path))
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_select.md",
-            problem_file="/tmp/test_problem.tex",
-            verification_reports_block="**Claude's proof verification(s):**\n- `/tmp/round_1/claude/verification_result.md`",
-            proof_claude="/tmp/round_1/claude/proof.md",
-            proof_codex="/tmp/round_1/codex/proof.md",
-            proof_gemini="/tmp/round_1/gemini/proof.md",
-            selection_file="/tmp/round_1/selection.md",
-            error_file="/tmp/round_1/error_proof_select.md",
-        )
-        check("proof_select.md renders OK", "selection" in prompt.lower())
-    except Exception as e:
-        check("proof_select.md renders OK", False, str(e))
-
-    # -------------------------------------------------------
-    # Test 7b: Verification agents config validation
-    # -------------------------------------------------------
-    va_cfg = pipeline_cfg.get("verification_agents", {})
-    if va_cfg.get("enabled", False):
-        va_providers = va_cfg.get("providers", ["claude"])
-        valid_names = {"claude", "codex", "gemini"}
-        all_valid = all(p in valid_names for p in va_providers)
-        check("verification_agents.providers valid",
-              all_valid, f"Invalid providers: {va_providers}")
-    else:
-        check("verification_agents config present (disabled OK)",
-              True, "verification_agents not enabled — Claude-only verification")
-
-    # -------------------------------------------------------
-    # Test 7c: Multi-model providers config validation
-    # -------------------------------------------------------
-    mm_cfg = pipeline_cfg.get("multi_model", {})
-    check("multi_model config present", "enabled" in mm_cfg, "Missing pipeline.multi_model in config")
-    if mm_cfg.get("enabled", False):
-        mm_providers = mm_cfg.get("providers", ["claude", "codex", "gemini"])
-        valid_names = {"claude", "codex", "gemini"}
-        all_valid = all(p in valid_names for p in mm_providers)
-        check("multi_model.providers valid",
-              all_valid, f"Invalid providers: {mm_providers}")
-    else:
-        check("multi_model config present (disabled OK)",
-              True, "multi_model not enabled — Claude-only proof search")
-
-    # -------------------------------------------------------
-    # Test 7c2: Brainstorm providers config validation
-    # -------------------------------------------------------
-    bs_cfg = pipeline_cfg.get("brainstorm", {})
-    if bs_cfg.get("enabled", False):
-        bs_providers = bs_cfg.get("providers", ["claude"])
-        valid_names = {"claude", "codex", "gemini"}
-        all_valid = all(p in valid_names for p in bs_providers)
-        check("brainstorm.providers valid",
-              all_valid, f"Invalid providers: {bs_providers}")
-    else:
-        check("brainstorm config present (disabled OK)",
-              True, "brainstorm not enabled")
-
-    # -------------------------------------------------------
-    # Test 7d: Auxiliary agent providers config validation
-    # -------------------------------------------------------
-    print("\n=== Test 7d: Auxiliary agent providers ===")
     valid_providers = {"claude", "codex", "gemini"}
-    auxiliary_agents = [
-        ("literature_survey", "Literature Survey"),
-        ("proof_select", "Proof Selection"),
-        ("proof_summary", "Proof Summary"),
-    ]
-    for agent_key, agent_name in auxiliary_agents:
-        agent_cfg = pipeline_cfg.get(agent_key, {})
-        provider = agent_cfg.get("provider", "claude")
-        is_valid = provider.lower() in valid_providers
-        check(f"{agent_key}.provider valid ({provider})",
-              is_valid, f"Invalid provider '{provider}' for {agent_name}")
+
+    def _validate_role(label: str, role_cfg) -> None:
+        if not isinstance(role_cfg, dict):
+            check(f"{label} is a dict", False,
+                  f"Expected dict like {{provider: 'codex', model: 'gpt-5.5'}}, got: {role_cfg!r}")
+            return
+        check(f"{label} is a dict", True)
+        provider = role_cfg.get("provider")
+        ok = isinstance(provider, str) and provider.lower() in valid_providers
+        check(f"{label}.provider valid ({provider})",
+              ok, f"Invalid or missing provider for {label}")
+
+    # Validate decomposition model assignments
+    decomp_models = decomp_cfg.get("models", {})
+    required_agents = ["decomposer", "single_prover", "regulator",
+                      "structural_verifier", "detailed_verifier", "verdict"]
+    for agent in required_agents:
+        _validate_role(f"decomposition.models.{agent}", decomp_models.get(agent))
+
+    # Validate limits
+    max_proof = decomp_cfg.get("max_proof_attempts", 3)
+    max_rev = decomp_cfg.get("max_revisions", 2)
+    max_decomp = decomp_cfg.get("max_decompositions", 2)
+    check("max_proof_attempts > 0", max_proof > 0, f"Invalid: {max_proof}")
+    check("max_revisions > 0", max_rev > 0, f"Invalid: {max_rev}")
+    check("max_decompositions > 0", max_decomp > 0, f"Invalid: {max_decomp}")
+
+    # -------------------------------------------------------
+    # Test 7: Auxiliary agent providers config validation
+    # -------------------------------------------------------
+    print("\n=== Test 7: Auxiliary agent providers ===")
+    for agent_key in ("literature_survey", "proof_summary"):
+        _validate_role(f"pipeline.{agent_key}", pipeline_cfg.get(agent_key))
+
+    # -------------------------------------------------------
+    # Test 7b: Standalone verifier agents (if present)
+    # -------------------------------------------------------
+    sv_cfg = config.get("standalone_verifier", {})
+    if sv_cfg:
+        print("\n=== Test 7b: Standalone verifier agents ===")
+        for agent_key in ("judge", "structural_verifier", "detailed_verifier", "problem_reviewer"):
+            _validate_role(f"standalone_verifier.{agent_key}", sv_cfg.get(agent_key))
 
     # -------------------------------------------------------
     # Test 8: Non-Claude provider connectivity (when needed)
     # -------------------------------------------------------
-
-    # Collect all providers that need connectivity testing
-    providers_to_test = set()
-
-    # From multi_model (parallel proof search)
-    if mm_cfg.get("enabled", False):
-        mm_providers = mm_cfg.get("providers", ["claude", "codex", "gemini"])
-        for p in mm_providers:
-            if p != "claude":  # Claude is tested separately in Test 5
-                providers_to_test.add(p)
-
-    # From verification_agents
-    va_cfg = pipeline_cfg.get("verification_agents", {})
-    if va_cfg.get("enabled", False):
-        for p in va_cfg.get("providers", []):
-            if p != "claude":  # Claude is tested separately in Test 5
-                providers_to_test.add(p)
-
-    # From auxiliary agents
-    for agent_key, _ in auxiliary_agents:
-        agent_cfg = pipeline_cfg.get(agent_key, {})
-        provider = agent_cfg.get("provider", "claude").lower()
-        if provider != "claude":
-            providers_to_test.add(provider)
-
-    # From brainstorm
-    if bs_cfg.get("enabled", False):
-        for p in bs_cfg.get("providers", []):
-            if p != "claude":
-                providers_to_test.add(p)
+    providers_to_test = {p for p in providers_in_use if p != "claude"}
 
     if providers_to_test:
         print(f"\n=== Test 8: Non-Claude provider connectivity (testing: {', '.join(sorted(providers_to_test))}) ===")
@@ -608,17 +451,28 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             codex_cli = codex_cfg.get("cli_path", "codex")
             if shutil.which(codex_cli) is not None:
                 try:
-                    codex_model = codex_cfg.get("model", "gpt-5.4")
+                    codex_model = codex_cfg.get("model", "gpt-5.5")
+                    codex_reasoning = codex_cfg.get("reasoning_effort", "xhigh")
+                    codex_cwd = tempfile.mkdtemp()
+                    # Mirror model_runner.run_codex_agent so the exit-code
+                    # check reflects how Codex behaves at runtime.
                     codex_result = subprocess.run(
                         [codex_cli, "--search", "-m", codex_model,
-                         "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
+                         "-c", f'model_reasoning_effort="{codex_reasoning}"',
+                         "exec", "--json",
+                         "--dangerously-bypass-approvals-and-sandbox",
+                         "-C", codex_cwd,
                          "Reply with exactly: SMOKE_TEST_OK"],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, timeout=120, cwd=tempfile.mkdtemp(),
+                        text=True, timeout=120, cwd=codex_cwd,
                     )
-                    check("Codex CLI exits cleanly", codex_result.returncode == 0,
-                          f"Exit code {codex_result.returncode}, stderr: {codex_result.stderr[:200]}")
                     codex_resp = codex_result.stdout.strip()
+                    # Non-zero exit is treated as a warning if a response was
+                    # produced (matches run_codex_agent's tolerance).
+                    exit_ok = codex_result.returncode == 0 or bool(codex_resp)
+                    check("Codex CLI exits cleanly (or returned a response)",
+                          exit_ok,
+                          f"Exit code {codex_result.returncode}, stderr: {codex_result.stderr[:200]}")
                     check("Codex responds", len(codex_resp) > 0, "Empty response")
                     check("Codex response valid",
                           "smoke" in codex_resp.lower() or "ok" in codex_resp.lower() or len(codex_resp) > 5,
@@ -629,7 +483,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
                     check("Codex connectivity", False, str(e))
             else:
                 check(f"Codex CLI '{codex_cli}' found", False,
-                      "Install codex or disable codex in verification_agents.providers / multi_model")
+                      "Install codex or switch decomposition.models.* away from codex")
 
         # --- Gemini ---
         if "gemini" in providers_to_test:
@@ -707,7 +561,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
                     check("Gemini connectivity", False, str(e))
             else:
                 check(f"Gemini CLI '{gemini_cli}' found", False,
-                      "Install gemini or disable gemini in verification_agents.providers / multi_model")
+                      "Install gemini or switch decomposition.models.* away from gemini")
     else:
         print("\n=== Test 8: Non-Claude provider connectivity [SKIPPED — no non-Claude providers enabled] ===")
 

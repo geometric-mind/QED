@@ -63,10 +63,11 @@ def make_claude_options(claude_cfg: dict) -> dict:
         api_cfg = claude_cfg.get("api_key", {})
         model = api_cfg.get("model", "claude-opus-4-6")
         key = api_cfg.get("key", "")
-        if not key:
-            raise ValueError("config.yaml: claude.api_key.key is empty. "
-                             "Set your Anthropic API key.")
-        env["ANTHROPIC_API_KEY"] = key
+        if key:
+            env["ANTHROPIC_API_KEY"] = key
+        # If key is empty we defer the failure: configs that don't invoke
+        # Claude (e.g. all-codex setups) should still load cleanly. If Claude
+        # is later invoked, the CLI will surface its own auth error.
     elif provider == "bedrock":
         bedrock_cfg = claude_cfg.get("bedrock", {})
         model = bedrock_cfg.get("model", "us.anthropic.claude-opus-4-6-v1[1m]")
@@ -82,18 +83,64 @@ def make_claude_options(claude_cfg: dict) -> dict:
     }
 
 
-def resolve_provider_and_model(config: dict, agent_name: str,
-                               cli_provider: str | None,
-                               cli_model: str | None) -> tuple[str, str | None]:
-    """Determine provider and optional model override for an agent.
+def resolve_agent_role_cfg(config: dict, agent_name: str,
+                           cli_provider: str | None,
+                           cli_model: str | None) -> dict:
+    """Return the per-agent role config dict for *agent_name*, with CLI overrides.
 
-    Priority: CLI --provider/--model > standalone_verifier config > default "claude".
-    Returns (provider, model_override_or_None).
+    The standalone_verifier section of config.yaml stores each agent as a dict
+    of the form ``{provider: 'codex', model?: '...', ...knobs...}``. CLI flags
+    ``--provider`` and ``--model`` override the corresponding fields.
+
+    Returns ``{provider, model?, ...other knobs}``.
     """
     sv_cfg = config.get("standalone_verifier", {})
-    provider = cli_provider or sv_cfg.get(agent_name, "claude")
-    model = cli_model  # None means "use config default"
-    return provider, model
+    raw = sv_cfg.get(agent_name)
+    if not isinstance(raw, dict) or "provider" not in raw:
+        raise ValueError(
+            f"standalone_verifier.{agent_name} must be a dict with a 'provider' key "
+            f"(e.g. {{provider: 'codex', model: 'gpt-5.5'}}). Got: {raw!r}"
+        )
+    role_cfg = dict(raw)
+    if cli_provider:
+        role_cfg["provider"] = cli_provider
+    if cli_model:
+        role_cfg["model"] = cli_model
+    return role_cfg
+
+
+def merge_provider_section(config: dict, role_cfg: dict) -> tuple[str, dict]:
+    """Resolve a role_cfg against the global codex/gemini/claude section.
+
+    Returns ``(provider, merged_provider_cfg)``. The merged dict has every
+    knob from the global section, overlaid with per-agent overrides.
+
+    For ``claude``, the per-agent ``model`` override slots into whichever
+    auth block (subscription/api_key/bedrock) ``claude.provider`` selects.
+    """
+    provider = role_cfg["provider"].lower().strip()
+    if provider not in ("claude", "codex", "gemini"):
+        raise ValueError(
+            f"Unknown provider {provider!r}; expected 'claude', 'codex', or 'gemini'."
+        )
+    overrides = {k: v for k, v in role_cfg.items() if k != "provider"}
+    global_section = config.get(provider, {})
+
+    if provider == "claude":
+        merged = dict(global_section)
+        auth_mode = merged.get("provider", "subscription")
+        if "model" in overrides:
+            sub = dict(merged.get(auth_mode, {}))
+            sub["model"] = overrides["model"]
+            merged[auth_mode] = sub
+        for k, v in overrides.items():
+            if k == "model":
+                continue
+            merged[k] = v
+        return provider, merged
+
+    merged = {**global_section, **overrides}
+    return provider, merged
 
 
 # ---------------------------------------------------------------------------
@@ -171,11 +218,6 @@ def run_codex(prompt: str, codex_cfg: dict, model_override: str | None = None) -
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True)
 
-    if result.returncode != 0:
-        print(f"[Codex] Non-zero exit code: {result.returncode}", file=sys.stderr)
-        if result.stderr.strip():
-            print(f"[Codex] stderr: {result.stderr.strip()[:500]}", file=sys.stderr)
-
     response = ""
     try:
         lines = result.stdout.strip().split("\n")
@@ -187,6 +229,16 @@ def run_codex(prompt: str, codex_cfg: dict, model_override: str | None = None) -
                     response = item.get("text", "")
     except (json.JSONDecodeError, ValueError):
         response = result.stdout.strip()
+
+    # Codex sometimes exits non-zero (warning) while still producing a valid
+    # agent_message. Treat the response as authoritative.
+    if result.returncode != 0:
+        msg = (f"[Codex] Non-zero exit code: {result.returncode}"
+               + (" (treating as warning since response was parsed)"
+                  if response.strip() else ""))
+        print(msg, file=sys.stderr)
+        if result.stderr.strip():
+            print(f"[Codex] stderr: {result.stderr.strip()[:500]}", file=sys.stderr)
 
     if not response.strip():
         raise RuntimeError(f"Codex returned empty response. "
@@ -264,16 +316,23 @@ def run_gemini(prompt: str, gemini_cfg: dict, model_override: str | None = None)
     return response
 
 
-def run_model(provider: str, prompt: str, config: dict,
-              model_override: str | None = None) -> str:
-    """Dispatch to the appropriate model runner."""
+def run_model_for_role(role_cfg: dict, prompt: str, config: dict) -> str:
+    """Dispatch a prompt using a per-agent role config dict.
+
+    Merges the role's overrides into the global codex/gemini/claude section,
+    then runs the chosen provider's CLI.
+    """
+    provider, merged_section = merge_provider_section(config, role_cfg)
+    model_override = role_cfg.get("model")
     if provider == "claude":
-        claude_opts = make_claude_options(config.get("claude", {}))
-        return run_claude(prompt, claude_opts, model_override)
+        # Build claude_opts from the merged section (so api_key/bedrock auth
+        # comes from the global section, and the model override from role_cfg).
+        claude_opts = make_claude_options(merged_section)
+        return run_claude(prompt, claude_opts)
     elif provider == "codex":
-        return run_codex(prompt, config.get("codex", {}), model_override)
+        return run_codex(prompt, merged_section, model_override)
     elif provider == "gemini":
-        return run_gemini(prompt, config.get("gemini", {}), model_override)
+        return run_gemini(prompt, merged_section, model_override)
     else:
         raise ValueError(f"Unknown provider: {provider!r}. "
                          f"Expected 'claude', 'codex', or 'gemini'.")
@@ -393,13 +452,13 @@ def run_problem_only(args):
 
     config = load_config(args.config)
 
-    provider, model = resolve_provider_and_model(
+    role_cfg = resolve_agent_role_cfg(
         config, "problem_reviewer", args.provider, args.model)
 
-    print(f"[Problem Review] Checking problem statement ({provider})",
+    print(f"[Problem Review] Checking problem statement ({role_cfg['provider']})",
           file=sys.stderr)
     prompt = load_prompt(PROMPT_CHECK_PROBLEM, problem=problem_text)
-    report = run_model(provider, prompt, config, model)
+    report = run_model_for_role(role_cfg, prompt, config)
 
     print(f"[Problem Review] Done", file=sys.stderr)
     write_report(report, args.output)
@@ -423,13 +482,13 @@ def run_verification(args):
     out_dir = output_dir_from_args(args)
 
     # --- Agent 1: Difficulty Judge ---
-    judge_provider, judge_model = resolve_provider_and_model(
+    judge_role = resolve_agent_role_cfg(
         config, "judge", args.provider, args.model)
 
-    print(f"[Agent 1] Difficulty Judge ({judge_provider})", file=sys.stderr)
+    print(f"[Agent 1] Difficulty Judge ({judge_role['provider']})", file=sys.stderr)
     judge_prompt = load_prompt(PROMPT_JUDGE,
                                problem=problem_text, proof=proof_text)
-    judge_output = run_model(judge_provider, judge_prompt, config, judge_model)
+    judge_output = run_model_for_role(judge_role, judge_prompt, config)
 
     difficulty = parse_difficulty(judge_output)
     print(f"[Agent 1] Difficulty: {difficulty}", file=sys.stderr)
@@ -441,14 +500,13 @@ def run_verification(args):
         return
 
     # --- Hard path: Agent 2 (structural) ---
-    struct_provider, struct_model = resolve_provider_and_model(
+    struct_role = resolve_agent_role_cfg(
         config, "structural_verifier", args.provider, args.model)
 
-    print(f"[Agent 2] Structural Verifier ({struct_provider})", file=sys.stderr)
+    print(f"[Agent 2] Structural Verifier ({struct_role['provider']})", file=sys.stderr)
     struct_prompt = load_prompt(PROMPT_STRUCTURAL,
                                 problem=problem_text, proof=proof_text)
-    structural_output = run_model(struct_provider, struct_prompt,
-                                  config, struct_model)
+    structural_output = run_model_for_role(struct_role, struct_prompt, config)
 
     # Write structural report to its own file
     if out_dir:
@@ -466,15 +524,14 @@ def run_verification(args):
         return
 
     # --- Hard path: Agent 3 (detailed) ---
-    detail_provider, detail_model = resolve_provider_and_model(
+    detail_role = resolve_agent_role_cfg(
         config, "detailed_verifier", args.provider, args.model)
 
-    print(f"[Agent 3] Detailed Verifier ({detail_provider})", file=sys.stderr)
+    print(f"[Agent 3] Detailed Verifier ({detail_role['provider']})", file=sys.stderr)
     detail_prompt = load_prompt(PROMPT_DETAILED,
                                 problem=problem_text, proof=proof_text,
                                 structural_report=structural_output)
-    detailed_output = run_model(detail_provider, detail_prompt,
-                                config, detail_model)
+    detailed_output = run_model_for_role(detail_role, detail_prompt, config)
 
     print(f"[Agent 3] Done", file=sys.stderr)
 

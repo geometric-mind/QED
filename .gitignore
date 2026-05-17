@@ -313,3 +313,5 @@ _pycache__/
 ui/proof_runs/
 .config_smoke_tmp.yaml
 .config_run_active.yaml
+
+proof_output/

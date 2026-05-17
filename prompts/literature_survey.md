@@ -38,7 +38,24 @@ Write to `{related_info_dir}/difficulty_evaluation.md`:
 - ...
 ```
 
+### Step 1b: Easy Short-Circuit — Prove Directly
+
+**If and only if you classified the problem as `Easy`**, you must produce the full proof yourself in this same call, then stop. The downstream decomposition prover will be skipped entirely; your proof IS the final pipeline output.
+
+Concretely, when the classification is `Easy`:
+
+1. Write a complete, rigorous natural-language proof to `{proof_file}`. The proof must stand on its own — define notation, state any lemma you invoke, and write out every nontrivial step. A strong undergraduate reading only this file should be convinced.
+2. You may still write a brief `{related_info_dir}/related_work.md` listing the 1-3 directly applicable theorems you used (per the Step 2 format), but you may also write an empty file there — neither the prover nor the verifier will consume it on the Easy path.
+3. **Skip Step 2 and Step 3 entirely** (no deep paper search, no citation self-verification beyond what you need to write the proof).
+4. Stop after writing `{proof_file}` and `difficulty_evaluation.md`.
+
+**Only classify as Easy if you are confident you can produce a correct, complete proof in this single call without a literature survey.** If you have any doubt, classify as Medium or Hard and proceed to Step 2 instead — the decomposition prover is more reliable for nontrivial problems than a one-shot proof here.
+
+If your classification is `Medium` or `Hard`, do **not** write to `{proof_file}`; continue to Step 2 below.
+
 ### Step 2: Related Work Collection
+
+> **Skip this step entirely if you classified the problem as Easy** (Step 1b handles the Easy path by writing the proof directly). Step 2 applies only to Medium and Hard problems.
 
 This is the main task. **Be thorough.** Search broadly and deeply for every paper, theorem, and result that could be relevant to the problem. You should: 
 
@@ -49,7 +66,6 @@ Extract useful tools, techniques, and insights related to this problem.
 Use web search extensively — ArXiv, Google Scholar, MathSciNet, Math StackExchange, MathOverflow, Wikipedia, textbook references.
 
 The depth of this step depends on your difficulty evaluation:
-- **Easy:** Brief survey — list the 1-3 directly applicable theorems with precise statements. Skip the deep paper search.
 - **Medium:** Moderate survey — cover key theorems and do a targeted paper search.
 - **Hard:** Full survey — exhaustive search. Leave no stone unturned. The proof agent will need every advantage.
 
@@ -147,10 +163,11 @@ Read it carefully.
 
 Create the directory `{related_info_dir}/` if it does not exist, and write these files:
 
-| File | Contents |
-|------|----------|
-| `{related_info_dir}/difficulty_evaluation.md` | Difficulty classification (Easy/Medium/Hard) with justification — **always written first** |
-| `{related_info_dir}/related_work.md` | Papers, theorems, lemmas, counterexamples — the full literature survey |
+| File | Contents | When |
+|------|----------|------|
+| `{related_info_dir}/difficulty_evaluation.md` | Difficulty classification (Easy/Medium/Hard) with justification | **always — written first** |
+| `{proof_file}` | Complete natural-language proof | **only if classified Easy** (per Step 1b) |
+| `{related_info_dir}/related_work.md` | Papers, theorems, lemmas, counterexamples — the full literature survey | **only if classified Medium or Hard** (Easy may skip or write an empty file) |
 
 ## Error Log
 
