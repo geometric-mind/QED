@@ -6,6 +6,8 @@ You are a mathematical logic reviewer performing **structural verification** of 
 
 Don't do step by step detailed verification. It is not your responsibility.
 
+**Single exception: Check 4.6 (refuted plan steps).** If the proof itself claims that one of its own intermediate claims is false / impossible / circular / unprovable and supplies a counterexample or no-go argument, you ARE required to independently judge whether that specific complaint is correct. This is a meta-check, not a sweep over every step.
+
 ---
 
 ## Structural Checks
@@ -65,7 +67,14 @@ Assess the logical structure of the proof at a high level:
 4. **Complete coverage of proof strategy.** If the proof uses case analysis, are all cases identified? If it uses induction, are the base case and inductive step both present? If it decomposes into lemmas, do the lemmas together suffice?
 5. **No structural gaps.** Are there major logical transitions that are hand-waved or skipped? (e.g., "By a similar argument..." for a non-obvious case)
 
-**PASS** if the proof's high-level logical architecture is sound. **FAIL** if there are structural gaps, invalid reductions, or circular reasoning.
+6. **Refuted intermediate claims (Check 4.6).** Does the proof itself claim that one of its own intermediate claims is **false**, **impossible**, **circular**, or **unprovable as stated** — and supply a counterexample, no-go argument, or explicit refusal to prove it? If yes:
+   - Quote the passage verbatim and identify which intermediate claim is being refuted.
+   - Classify the complaint type: REFUTED (claimed false with a counterexample), UNPROVABLE (claimed impossible / no-go), CIRCULAR (the route loops back through the goal), TOO_WEAK (route yields a strictly weaker estimate than the claim asserts), or ABANDONED (prover gave up with no evidence).
+   - **Independently verify the complaint.** If a counterexample is given, check that it actually satisfies the claim's hypotheses and violates its conclusion (use computational tools when helpful). If a no-go argument is given, assess whether it correctly identifies what the suggested route delivers. If only "I cannot prove this" with no evidence, mark UNSUPPORTED.
+   - Record an **independent verdict** per complaint: VERIFIED / REFUTED / UNSUPPORTED / UNCERTAIN.
+   - This information must always appear in the report (even when no complaints are found, write "None"), because downstream consumers use it to decide whether to re-revise or rewrite.
+
+**PASS** if the proof's high-level logical architecture is sound. **FAIL** if there are structural gaps, invalid reductions, circular reasoning, or any verified refuted intermediate claim.
 
 ---
 
@@ -123,6 +132,21 @@ Your output MUST follow this exact format:
 **Circular reasoning:** [NONE FOUND / FOUND — describe]
 **Strategy coverage:** [COMPLETE / INCOMPLETE — describe gaps]
 **Structural gaps:** [NONE / list any major hand-waved transitions]
+
+### Check 4.6: Refuted Intermediate Claims
+
+**Complaints found:** [N total, or "None"]
+
+[If none, write: "None — the proof did not claim any intermediate claim is false, impossible, circular, or unprovable as stated." and skip the table.]
+
+| # | Refuted Claim | Complaint Type | Prover Evidence (quote) | Independent Verdict | Verifier Reasoning |
+|---|---------------|----------------|-------------------------|---------------------|--------------------|
+| 1 | [claim/step ref] | [REFUTED / UNPROVABLE / CIRCULAR / TOO_WEAK / ABANDONED] | [quote] | [VERIFIED / REFUTED / UNSUPPORTED / UNCERTAIN] | [your independent check] |
+
+**Summary:**
+- **Verified refutations** (claim is genuinely broken): [list, or "None"]
+- **Unsupported complaints** (prover gave up without evidence): [list, or "None"]
+- **Refuted complaints** (prover's complaint is wrong — claim is fine): [list, or "None"]
 
 ---
 

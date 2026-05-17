@@ -10,6 +10,8 @@ This covers five phases: Problem-Statement Integrity, Completeness and Originali
 
 **IMPORTANT: Your task is ONLY the five structural phases described below. Do NOT perform detailed step-by-step verification of individual proof steps — that is the responsibility of a separate detailed verifier (Phase 6). Your job is to check the proof's structural foundations: whether it addresses the right problem, covers all questions, contains genuine proof work, has valid citations, and follows the decomposition plan. Do NOT verify whether each logical step in the proof is mathematically correct — leave that to the detailed verifier.**
 
+**Single exception: Phase 4f (refuted plan steps).** If the prover claims a plan step is false / impossible / circular / unprovable and supplies a counterexample or no-go argument, you ARE required to independently judge whether that specific complaint is correct. This is a meta-check on the plan, not a sweep over every step, and the regulator needs it.
+
 ---
 
 ## Context: Decomposition-Based Proving
@@ -160,6 +162,28 @@ For each key step (`is_key_step: true`):
 1. **Are the sources from the decomposition plan actually used?** — The plan identified relevant literature
 2. **Are sources used correctly?** — Citations should match how the decomposition intended them to be used
 
+#### 4f. Refuted plan steps (prover complaints against the decomposition)
+
+Sometimes the prover concludes, while writing the proof, that a step in the decomposition plan is **false**, **impossible**, **circular**, or otherwise **unprovable as stated** — and gives a counterexample, a no-go argument, or an explicit refusal to prove it. This is a strong signal that the regulator needs, and it must be surfaced distinctly from a plain "step left unproved."
+
+**Important exception to the no-detailed-verification rule:** for refuted plan steps only, you ARE required to independently judge whether the prover's complaint is mathematically correct. This is a meta-check on the plan, not a step-by-step proof check, and it is essential for the regulator to decide between REVISE_PLAN and REWRITE.
+
+1. **Scan for prover complaints.** Look for any passage where the proof states (in whatever phrasing) that a plan step is false, has a counterexample, cannot be proved by the suggested route, is circular, or is otherwise structurally broken. Quote the passage verbatim.
+
+2. **For each complaint, identify:**
+   - Which plan step (STEP ID) the complaint is against.
+   - The complaint **type**: REFUTED (claimed false with a counterexample), UNPROVABLE (claimed impossible / no-go), CIRCULAR (the suggested route loops back through the goal), TOO_WEAK (route yields a strictly weaker estimate than the step asserts), or ABANDONED (the prover gave up without specifying why).
+   - The prover's evidence: the counterexample / argument / computation, quoted.
+
+3. **Independently verify the complaint.** Without re-proving the step yourself, judge whether the prover's complaint is correct:
+   - If the prover gives a counterexample, check that the counterexample actually satisfies the step's hypotheses and violates its conclusion. Use the shell / computational tools if helpful (small numerical checks, symbolic substitution, plotting).
+   - If the prover gives a no-go argument (e.g. "the standard Rayleigh quotient route only yields a double-exponential bound"), assess whether the argument is sound at the level of structure (not full rigor): does it correctly identify what the suggested route delivers, and does that fall short of what the step claims?
+   - If the prover only says "I cannot prove this" with no argument, mark it ABANDONED and the verification verdict is UNSUPPORTED.
+
+   **Independent verdict per complaint:** VERIFIED (complaint is correct), REFUTED (complaint is wrong — the step is fine), UNSUPPORTED (prover gave no real evidence), or UNCERTAIN (cannot determine without detailed proof work).
+
+4. **Do not penalize Phase 4 itself for the existence of a complaint.** A verified complaint means the *plan* is broken, not that the *proof aggregation* is broken. Phase 4 (decomposition adherence) is FAIL if the proof failed to address steps or deviated without justification. A correctly-flagged refutation of a plan step is a structural FAIL via Phase 2 (acknowledged hole), and is reported here in 4f to give the regulator the information it needs.
+
 **Phase 4 overall:** PASS if:
 - All decomposition steps are adequately addressed (or deviation justified)
 - Key steps receive rigorous treatment
@@ -167,6 +191,8 @@ For each key step (`is_key_step: true`):
 - Sources are used as intended (or deviation justified)
 
 FAIL if any of the above are not met.
+
+Independently from Phase 4's PASS/FAIL, **always fill in the 4f section of the report**, even if no complaints were found ("None — the proof did not claim any plan step is false or impossible").
 
 ### Phase 5: Additional Verification Rules
 
@@ -194,7 +220,7 @@ Write large results to files in `{output_dir}/tmp/` and print only summaries. If
 
 ## Critical Instructions
 
-- **ONLY perform the five structural phases.** Do NOT check whether individual proof steps are mathematically correct.
+- **ONLY perform the five structural phases.** Do NOT check whether individual proof steps are mathematically correct. The single exception is Phase 4f, where you must independently judge any explicit refutation or no-go argument the prover raised against a plan step.
 - **Follow the five phases in order.**
 - Be thorough and skeptical. Your job is to find structural errors.
 - **Citations are the #1 source of hallucinations. Check every single one.**
@@ -332,6 +358,21 @@ Write ALL verification results to:
 
 **Sources from plan used:** [list]
 **Sources used correctly:** [YES / NO]
+
+### 4f. Refuted Plan Steps (prover complaints against the decomposition)
+
+**Complaints found:** [N total, or "None"]
+
+[If none, write: "None — the proof did not claim any plan step is false, impossible, circular, or unprovable as stated." and skip the per-complaint table.]
+
+| # | Step ID | Complaint Type | Prover Evidence (quote) | Independent Verdict | Verifier Reasoning |
+|---|---------|----------------|-------------------------|---------------------|--------------------|
+| 1 | [STEP_ID] | [REFUTED / UNPROVABLE / CIRCULAR / TOO_WEAK / ABANDONED] | [quote the prover's counterexample or no-go argument] | [VERIFIED / REFUTED / UNSUPPORTED / UNCERTAIN] | [your independent check: did the counterexample actually satisfy hypotheses and violate the conclusion? was the no-go argument structurally sound?] |
+
+**Summary for regulator:**
+- **Verified refutations** (plan step is genuinely broken): [list step IDs, or "None"]
+- **Unsupported complaints** (prover gave up without evidence): [list step IDs, or "None"]
+- **Refuted complaints** (prover's complaint is wrong — step is fine): [list step IDs, or "None"]
 
 **Phase 4 overall:** [PASS / FAIL]
 
