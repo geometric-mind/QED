@@ -31,7 +31,28 @@ QED is a multi-agent pipeline that takes a mathematical problem statement in LaT
 
 ## Math Research Problems Solved by QED, Verified by Domain Experts
 
-### 1. Local Invariant Cycle Theorem over Integers for $H^1$ (Algebraic Geometry)
+### 1. Lower Bounds for Advection-Diffusion Equations (PDE / Analysis)
+
+**Domain:** Partial differential equations, advection-diffusion, mixing, fluid dynamics.
+
+**What QED solved:** Explicit lower bounds for advection-diffusion equations across three scenarios: a polynomial bound for inviscid shears, a uniform positive lower bound on the mixing scale for diffusive shears, and an exponential bound for rapidly oscillating time-periodic flows. The proofs were generated entirely by QED without expert human intervention.
+
+**Workflow:** Chenyang An ran QED in decomposition mode.The proof was verified by Professor Xiaoqian Xu.
+
+**Paper:** [Lower Bounds for Advection-Diffusion Equations: An Exploration with AI-Generated Proofs (arXiv:2605.20623)](https://arxiv.org/abs/2605.20623)
+
+**Expert:** Xiaoqian Xu, Assistant Professor of Mathematics at Duke Kunshan University and Zu Chongzhi Center for Mathematics and Computational Sciences.
+
+<details>
+<summary><b>Expert comment (Xiaoqian Xu)</b></summary>
+
+This work is comparable to work published at *SIAM Journal on Mathematical Analysis* (SIMA) or *Journal of Differential Equations* (JDE).
+
+</details>
+
+---
+
+### 2. Local Invariant Cycle Theorem over Integers for $H^1$ (Algebraic Geometry)
 
 **Domain:** Algebraic geometry, Hodge theory, monodromy, cohomology of degenerations.
 
@@ -56,7 +77,7 @@ See the [full expert comments](proved_statements/algberaicgeometry-May-17-2026/R
 
 ---
 
-### 2. Return Probability Asymptotics for Lamplighter Walk on $\mathbb{Z}_2 \wr T_d$ (Probability Theory)
+### 3. Return Probability Asymptotics for Lamplighter Walk on $\mathbb{Z}_2 \wr T_d$ (Probability Theory)
 
 **Domain:** Probability theory, random walks on groups, lamplighter random walks, spectral analysis.
 
@@ -79,7 +100,7 @@ This is a research-level open question in probability theory. Without human math
 
 ---
 
-### 3. Total Variation Asymptotics for Switch-Walk-Switch on $\mathbb{Z}_2 \wr \mathbb{Z}$ (Probability Theory)
+### 4. Total Variation Asymptotics for Switch-Walk-Switch on $\mathbb{Z}_2 \wr \mathbb{Z}$ (Probability Theory)
 
 **Domain:** Probability theory, random walks on groups, lamplighter random walks, total variation distance.
 
@@ -102,61 +123,7 @@ This is a technically nontrivial PhD-level problem in probability theory. Withou
 
 ---
 
-### 4. Nonexistence Result for Critical Transport Equation (Applied Analysis / Fluid PDE)
-
-**Domain:** Applied analysis, fluid mixing, critical transport equations.
-
-**What QED solved:** QED proved that no flow exists satisfying certain properties in a critical case of the transport equation — a negative answer that the domain expert did not expect. The expert had anticipated a constructive proof using Fourier modes, but QED produced a straightforward impossibility proof instead.
-
-**Expert:** Xiaoqian Xu, Assistant Professor of Mathematics at Duke Kunshan University.
-
-**Workflow:** Professor Xu provided this problem (along with three others) to Chenyang An (PhD candidate, UCSD Mathematics), who has no background in the problem domain. Chenyang An ran QED with no human intervention — the entire flow was fully automated. QED proved the statement in Round 1. The proof was sent back to Professor Xu, who verified its correctness.
-
-**Problems and proofs:** [`proved_statements/analysis-Apr-24-2026/`](proved_statements/analysis-Apr-24-2026/) (P3)
-
-<details>
-<summary><b>Expert comment (Xiaoqian Xu)</b></summary>
-
-"It's about a critical case of the transport equation; usually people would expect some harder tools to deal with it, but AI just gives a very straightforward proof, which is not something we expected."
-
-"Few people, especially in the field of analysis or PDE, think that AI can really work for analysis problems. These proofs show that AI can really help, even with LLM."
-
-"In the whole process, I only provided the problem description. Chenyang, who is not an analyst, did all the prompt work. The proofs were not obtained through guidance from experts. To be honest, I myself don't know how to solve the problems at all."
-
-See the [full expert comments](proved_statements/analysis-Apr-24-2026/README.md#expert-comments-from-professor-xiaoqian-xu) for complete details.
-
-</details>
-
----
-
-### 5. Equivalence of Batchelor Scale Condition for Shear Flow (Applied Analysis / Fluid PDE)
-
-**Domain:** Applied analysis, fluid PDE, advection-diffusion equations, turbulence theory, Batchelor scale.
-
-**What QED solved:** Prior work by Professor Xu and collaborator Yupei established a sufficient condition for the existence of the Batchelor scale in shear flow — the first result of its kind. QED proved that this sufficient condition is in fact an equivalent condition, a result that surprised the domain expert, who believed new tools beyond the existing argument would be needed.
-
-**Expert:** Xiaoqian Xu, Assistant Professor of Mathematics at Duke Kunshan University.
-
-**Workflow:** Professor Xu provided this problem (along with three others) to Chenyang An (PhD candidate, UCSD Mathematics), who has no background in the problem domain. Chenyang An ran QED with no human intervention — the entire flow was fully automated. QED proved the statement in Round 3. The proof was sent back to Professor Xu, who verified its correctness.
-
-**Problems and proofs:** [`proved_statements/analysis-Apr-24-2026/`](proved_statements/analysis-Apr-24-2026/) (P4)
-
-<details>
-<summary><b>Expert comment (Xiaoqian Xu)</b></summary>
-
-"To my surprise, it shows that the result by Yupei and me is actually an equivalent condition for shear flow — that the Batchelor Scale exists. This is really impressive because both of us agree that there may need some new tools, not just by our argument, to prove that the Batchelor Scale really exists. But AI told us that we don't even need to go deeper into our argument; our result itself is equivalent to the existence of the Batchelor Scale. The proof is relatively straightforward, but it is still nontrivial, and if we don't know the definite answer, we will probably never try it."
-
-"Few people, especially in the field of analysis or PDE, think that AI can really work for analysis problems. These proofs show that AI can really help, even with LLM."
-
-"In the whole process, I only provided the problem description. Chenyang, who is not an analyst, did all the prompt work. The proofs were not obtained through guidance from experts. To be honest, I myself don't know how to solve the problems at all."
-
-See the [full expert comments](proved_statements/analysis-Apr-24-2026/README.md#expert-comments-from-professor-xiaoqian-xu) for complete details.
-
-</details>
-
----
-
-### 6. Carleman Weight Function Construction (Inverse Problems / PDE)
+### 5. Carleman Weight Function Construction (Inverse Problems / PDE)
 
 **Domain:** Inverse problems, Carleman estimates, wave equations on half-infinite domains.
 
